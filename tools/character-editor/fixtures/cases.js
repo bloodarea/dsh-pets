@@ -1,5 +1,5 @@
 /*
- * fixtures/cases.js —— 「Spine 快速摆位与调试」手写 fixture 源码（可入库）。
+ * fixtures/cases.js —— 「内置人物包管理器」手写 fixture 源码（可入库）。
  *
  * 结构（契约 A9）：{ id, label, group, example, json, atlasText, textureSpec, expected }。
  * - textureSpec：{ width, height, cells:[{rect,color,label}] }；多 page 时为

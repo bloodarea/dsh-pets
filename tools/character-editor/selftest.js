@@ -640,6 +640,338 @@
     ok("fixture 含示例用例", examples.length >= 4, examples);
   }
 
+  /* ------------------------------------------------------------------ *
+   * bundle.js 纯函数断言（契约 §5.3）：索引 / 路径 / 补丁 / ZIP
+   * 只测无 DOM/fetch 的纯函数；服务端 Origin/大小/路径与服务集成验证不属于这里。
+   * ------------------------------------------------------------------ */
+  function runBundle() {
+    var B = global.SpineBundle;
+    currentCase = "(bundle)";
+    if (!B) {
+      record(false, "SpineBundle 未加载", "存在", "缺失", "");
+      return;
+    }
+
+    var enc = function (s) {
+      return new TextEncoder().encode(s);
+    };
+    var same = function (a, b) {
+      return JSON.stringify(a) === JSON.stringify(b);
+    };
+    var bytesEqual = function (a, b) {
+      if (!a || !b || a.length !== b.length) return false;
+      for (var i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+      return true;
+    };
+    var mutate = function (base, fn) {
+      var o = JSON.parse(JSON.stringify(base));
+      fn(o);
+      return o;
+    };
+
+    /* ---- crc32：标准向量 / 无符号 / 不修改输入 ---- */
+    eq("crc32 空字节 = 0", B.crc32(new Uint8Array(0)), 0);
+    eq("crc32 ASCII '123456789' = 0xcbf43926", B.crc32(enc("123456789")), 0xcbf43926);
+    eq("crc32 含 0/255 二进制固定向量", B.crc32(new Uint8Array([0, 255, 0, 255, 127, 128])), 0x8021b4db);
+    eq("crc32 返回无符号 32 位", B.crc32(new Uint8Array([0])), 0xd202ef8d);
+    var crcIn = new Uint8Array([1, 2, 3]);
+    B.crc32(crcIn);
+    ok("crc32 不修改输入", crcIn[0] === 1 && crcIn[1] === 2 && crcIn[2] === 3);
+
+    /* ---- buildZipStore：逐偏移验证 local/central/EOCD ---- */
+    var e1 = { name: "index.json", bytes: enc('{"schemaVersion":1}') };
+    var e2 = { name: "model.png", bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff, 0x00, 0x80]) };
+    var built = B.buildZipStore([e1, e2]);
+    ok("buildZipStore 两条目构建成功", built.ok === true, JSON.stringify(built.issues || []));
+    var zip = built.value;
+    var view = new DataView(zip.buffer, zip.byteOffset, zip.byteLength);
+    var n1 = enc(e1.name).length;
+    var n2 = enc(e2.name).length;
+    var expectLen =
+      30 + n1 + e1.bytes.length + (30 + n2 + e2.bytes.length) + (46 + n1) + (46 + n2) + 22;
+    eq("ZIP 总长度 = 预检公式", zip.length, expectLen);
+    eq("local #1 签名", view.getUint32(0, true), 0x04034b50);
+    eq("local #1 version-needed=20", view.getUint16(4, true), 20);
+    eq("local #1 UTF-8 标志 0x0800", view.getUint16(6, true), 0x0800);
+    eq("local #1 method=0 store", view.getUint16(8, true), 0);
+    eq("local #1 DOS time 固定 0", view.getUint16(10, true), 0);
+    eq("local #1 DOS date 固定 0x0021", view.getUint16(12, true), 0x0021);
+    eq("local #1 CRC", view.getUint32(14, true), B.crc32(e1.bytes) >>> 0);
+    eq("local #1 压缩长度=原始长度", view.getUint32(18, true), e1.bytes.length);
+    eq("local #1 原始长度", view.getUint32(22, true), e1.bytes.length);
+    eq("local #1 文件名长度 (UTF-8 字节)", view.getUint16(26, true), n1);
+    eq("local #1 extra 长度 0", view.getUint16(28, true), 0);
+    eq("local #1 文件名 UTF-8 解码", new TextDecoder().decode(zip.subarray(30, 30 + n1)), e1.name);
+    ok("local #1 内容是原字节", bytesEqual(zip.subarray(30 + n1, 30 + n1 + e1.bytes.length), e1.bytes));
+    var off2 = 30 + n1 + e1.bytes.length;
+    eq("local #2 签名", view.getUint32(off2, true), 0x04034b50);
+    eq("local #2 CRC", view.getUint32(off2 + 14, true), B.crc32(e2.bytes) >>> 0);
+    eq("local #2 方法 store", view.getUint16(off2 + 8, true), 0);
+    eq("local #2 文件名", new TextDecoder().decode(zip.subarray(off2 + 30, off2 + 30 + n2)), e2.name);
+    ok("local #2 内容是原字节", bytesEqual(zip.subarray(off2 + 30 + n2, off2 + 30 + n2 + e2.bytes.length), e2.bytes));
+    var c1 = off2 + 30 + n2 + e2.bytes.length;
+    eq("central #1 签名", view.getUint32(c1, true), 0x02014b50);
+    eq("central #1 made-by=20", view.getUint16(c1 + 4, true), 20);
+    eq("central #1 needed=20", view.getUint16(c1 + 6, true), 20);
+    eq("central #1 UTF-8 标志", view.getUint16(c1 + 8, true), 0x0800);
+    eq("central #1 method=0", view.getUint16(c1 + 10, true), 0);
+    eq("central #1 DOS time", view.getUint16(c1 + 12, true), 0);
+    eq("central #1 DOS date", view.getUint16(c1 + 14, true), 0x0021);
+    eq("central #1 CRC", view.getUint32(c1 + 16, true), B.crc32(e1.bytes) >>> 0);
+    eq("central #1 压缩长度", view.getUint32(c1 + 20, true), e1.bytes.length);
+    eq("central #1 原始长度", view.getUint32(c1 + 24, true), e1.bytes.length);
+    eq("central #1 文件名长度", view.getUint16(c1 + 28, true), n1);
+    eq("central #1 extra=0", view.getUint16(c1 + 30, true), 0);
+    eq("central #1 comment=0", view.getUint16(c1 + 32, true), 0);
+    eq("central #1 disk-start=0", view.getUint16(c1 + 34, true), 0);
+    eq("central #1 内部属性=0", view.getUint16(c1 + 36, true), 0);
+    eq("central #1 外部属性=0", view.getUint32(c1 + 38, true), 0);
+    eq("central #1 local offset", view.getUint32(c1 + 42, true), 0);
+    eq("central #1 文件名", new TextDecoder().decode(zip.subarray(c1 + 46, c1 + 46 + n1)), e1.name);
+    var c2 = c1 + 46 + n1;
+    eq("central #2 签名", view.getUint32(c2, true), 0x02014b50);
+    eq("central #2 local offset", view.getUint32(c2 + 42, true), off2);
+    var eocd = zip.length - 22;
+    eq("EOCD 签名", view.getUint32(eocd, true), 0x06054b50);
+    eq("EOCD disk=0", view.getUint16(eocd + 4, true), 0);
+    eq("EOCD start-disk=0", view.getUint16(eocd + 6, true), 0);
+    eq("EOCD 本盘条目数", view.getUint16(eocd + 8, true), 2);
+    eq("EOCD 总条目数", view.getUint16(eocd + 10, true), 2);
+    eq("EOCD central 尺寸", view.getUint32(eocd + 12, true), zip.length - 22 - c1);
+    eq("EOCD central 偏移", view.getUint32(eocd + 16, true), c1);
+    eq("EOCD comment 长度 0", view.getUint16(eocd + 20, true), 0);
+    ok("ZIP 无前后多余字节", zip.length === eocd + 22);
+    var zipAgain = B.buildZipStore([e1, e2]).value;
+    ok("相同输入生成字节完全相同", bytesEqual(zip, zipAgain));
+    ok("buildZipStore 不修改输入条目", bytesEqual(e1.bytes, enc('{"schemaVersion":1}')) && bytesEqual(e2.bytes, new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff, 0x00, 0x80])));
+
+    /* ---- ZIP 拒绝与限额预检（不为 4GiB 边界分配内存） ---- */
+    ok("ZIP 拒绝空条目清单", B.buildZipStore([]).ok === false);
+    ok("ZIP 拒绝重名（不区分大小写）", B.buildZipStore([{ name: "model.png", bytes: e2.bytes }, { name: "MODEL.PNG", bytes: e2.bytes }]).ok === false);
+    ok("ZIP 拒绝带目录的条目名", B.buildZipStore([{ name: "sub/model.png", bytes: e2.bytes }]).ok === false);
+    ok("ZIP 拒绝非 Uint8Array 内容", B.buildZipStore([{ name: "model.png", bytes: [1, 2, 3] }]).ok === false);
+    var many = [];
+    for (var mi = 0; mi < 20; mi++) many.push({ name: "f" + mi + ".png", bytes: e2.bytes });
+    ok("ZIP 条目上限 19（20 拒绝 / 19 通过）", B.checkZipEntries(many).ok === false && B.checkZipEntries(many.slice(0, 19)).ok === true);
+    var fakeHuge = { length: 0x100000000 };
+    Object.defineProperty(fakeHuge, Symbol.toStringTag, { value: "Uint8Array" });
+    var overflow = B.checkZipEntries([{ name: "huge.png", bytes: fakeHuge }]);
+    ok(
+      "ZIP32 溢出由预检尺寸函数拒绝",
+      overflow.ok === false && overflow.issues.some(function (i) { return i.code === "ZIP32_OVERFLOW"; })
+    );
+
+    /* ---- validateIndex：主包 / legacy / 多页 / 负例 ---- */
+    var mainIdx = {
+      schemaVersion: 1,
+      base: "assets/characters/deepseek/spine",
+      label: "deepseek 女仆",
+      files: { model: "model.json", atlas: "model.atlas", textures: ["model.png"] },
+    };
+    var mainBefore = JSON.stringify(mainIdx);
+    var vMain = B.validateIndex(mainIdx);
+    ok("validateIndex 主包索引合法", vMain.ok === true, JSON.stringify(vMain.issues || []));
+    ok("validateIndex 输出规范化（同字段同序）", same(vMain.value, mainIdx));
+    ok("validateIndex 不修改调用者对象", JSON.stringify(mainIdx) === mainBefore);
+    var legacy = {
+      schemaVersion: 1,
+      base: "assets/characters/deepseek/spine/legacy-views",
+      files: { model: "model.json", atlas: "model.atlas", textures: ["model.png"] },
+    };
+    ok("validateIndex legacy 索引（无 label）合法", B.validateIndex(legacy).ok === true);
+    var multi = {
+      schemaVersion: 1,
+      base: "assets/x",
+      files: { model: "m.json", atlas: "m.atlas", textures: ["m.png", "m-2.webp"] },
+    };
+    ok("validateIndex 多页贴图合法", B.validateIndex(multi).ok === true);
+    ok("validateIndex 缺 schemaVersion 拒绝", B.validateIndex(mutate(mainIdx, function (o) { delete o.schemaVersion; })).ok === false);
+    ok("validateIndex schemaVersion \"1\" 拒绝", B.validateIndex(mutate(mainIdx, function (o) { o.schemaVersion = "1"; })).ok === false);
+    ok("validateIndex schemaVersion true 拒绝", B.validateIndex(mutate(mainIdx, function (o) { o.schemaVersion = true; })).ok === false);
+    ok("validateIndex schemaVersion 2 拒绝", B.validateIndex(mutate(mainIdx, function (o) { o.schemaVersion = 2; })).ok === false);
+    ok("validateIndex 未知顶层字段拒绝", B.validateIndex(mutate(mainIdx, function (o) { o.extra = 1; })).ok === false);
+    ok("validateIndex 缺 files.model 拒绝", B.validateIndex(mutate(mainIdx, function (o) { delete o.files.model; })).ok === false);
+    ok("validateIndex model 非 .json 拒绝", B.validateIndex(mutate(mainIdx, function (o) { o.files.model = "model.png"; })).ok === false);
+    ok("validateIndex model=index.json 拒绝", B.validateIndex(mutate(mainIdx, function (o) { o.files.model = "index.json"; })).ok === false);
+    ok("validateIndex 贴图空数组拒绝", B.validateIndex(mutate(mainIdx, function (o) { o.files.textures = []; })).ok === false);
+    ok("validateIndex 贴图超过 16 页拒绝", B.validateIndex(mutate(mainIdx, function (o) {
+      o.files.textures = [];
+      for (var ti = 0; ti < 17; ti++) o.files.textures.push("p" + ti + ".png");
+    })).ok === false);
+    ok("validateIndex 贴图重复拒绝", B.validateIndex(mutate(mainIdx, function (o) { o.files.textures = ["model.png", "model.png"]; })).ok === false);
+    ok("validateIndex 贴图大小写冲突拒绝", B.validateIndex(mutate(mainIdx, function (o) { o.files.textures = ["model.png", "MODEL.png"]; })).ok === false);
+    var label120 = new Array(121).join("字");
+    ok("validateIndex label 120 字符通过", B.validateIndex(mutate(mainIdx, function (o) { o.label = label120; })).ok === true);
+    ok("validateIndex label 121 字符拒绝", B.validateIndex(mutate(mainIdx, function (o) { o.label = label120 + "字"; })).ok === false);
+    ok("validateIndex 绝对 base 拒绝", B.validateIndex(mutate(mainIdx, function (o) { o.base = "/assets/x"; })).ok === false);
+    ok("validateIndex .. 段 base 拒绝", B.validateIndex(mutate(mainIdx, function (o) { o.base = "assets/../x"; })).ok === false);
+    var noBaseIdx = mutate(mainIdx, function (o) { delete o.base; });
+    ok("validateIndex 缺 base（picker 语义）拒绝", B.validateIndex(noBaseIdx).ok === false);
+    ok("validateIndex 缺 base 可放宽（URL 语义）", B.validateIndex(noBaseIdx, { requireBase: false }).ok === true);
+
+    /* ---- validateFilename / validateBase ---- */
+    ok("validateFilename 正常 basename", B.validateFilename("model.png").ok === true);
+    ok("validateFilename 拒绝首字符点", B.validateFilename(".model.png").ok === false);
+    ok("validateFilename 拒绝斜杠", B.validateFilename("a/model.png").ok === false);
+    ok("validateFilename 拒绝反斜杠", B.validateFilename("a\\model.png").ok === false);
+    ok("validateFilename 拒绝盘符冒号", B.validateFilename("C:model.png").ok === false);
+    ok("validateFilename 拒绝百分号", B.validateFilename("model%2epng").ok === false);
+    ok("validateFilename 拒绝 ..", B.validateFilename("..").ok === false);
+    ok("validateFilename 拒绝 Windows 设备名", B.validateFilename("con.png").ok === false);
+    ok("validateFilename 拒绝 129 字符", B.validateFilename(new Array(126).join("b") + ".png").ok === false);
+    ok("validateFilename 接受 128 字符边界", B.validateFilename(new Array(125).join("b") + ".png").ok === true);
+    ok("validateBase 正常相对目录", B.validateBase("assets/characters/deepseek/spine").ok === true);
+    ok("validateBase 拒绝绝对路径", B.validateBase("/assets/x").ok === false);
+    ok("validateBase 拒绝 .. 段", B.validateBase("assets/../x").ok === false);
+    ok("validateBase 拒绝空段", B.validateBase("assets//x").ok === false);
+    ok("validateBase 拒绝结尾斜杠", B.validateBase("assets/x/").ok === false);
+    ok("validateBase 拒绝协议", B.validateBase("https://x").ok === false);
+    ok("validateBase 拒绝反斜杠", B.validateBase("assets\\x").ok === false);
+    ok("validateBase 拒绝百分号", B.validateBase("assets/%2e%2e/x").ok === false);
+
+    /* ---- parseIndexParam / resolveIndexLocation ---- */
+    var pi = B.parseIndexParam("assets/characters/deepseek/spine/index.json");
+    ok("parseIndexParam 正常路径", pi.ok === true && pi.value.observedBase === "assets/characters/deepseek/spine");
+    ok("parseIndexParam 拒绝起始斜杠", B.parseIndexParam("/assets/x/index.json").ok === false);
+    ok("parseIndexParam 拒绝非 index.json 结尾", B.parseIndexParam("assets/x/model.json").ok === false);
+    ok("parseIndexParam 拒绝 .. 段", B.parseIndexParam("assets/../index.json").ok === false);
+    ok("parseIndexParam 拒绝协议", B.parseIndexParam("http://x/index.json").ok === false);
+    var pickerLoc = B.resolveIndexLocation(validateOk(noBaseIdx, false), null);
+    ok("resolveIndexLocation picker 缺 base 拒绝", pickerLoc.ok === false);
+    var urlLoc = B.resolveIndexLocation(validateOk(noBaseIdx, false), "assets/x");
+    ok("resolveIndexLocation URL 缺 base 由目录推导", urlLoc.ok === true && urlLoc.value.base === "assets/x");
+    var urlLoc2 = B.resolveIndexLocation(vMain.value, mainIdx.base);
+    ok("resolveIndexLocation URL base 一致通过", urlLoc2.ok === true && urlLoc2.value.indexPath === mainIdx.base + "/index.json");
+    ok("resolveIndexLocation URL base 不一致拒绝", B.resolveIndexLocation(mutate(mainIdx, function (o) { o.base = "assets/other"; }), mainIdx.base).ok === false);
+    var locInput = mutate(mainIdx, function () {});
+    var locBefore = JSON.stringify(locInput);
+    B.resolveIndexLocation(locInput, mainIdx.base);
+    ok("resolveIndexLocation 不修改调用者对象", JSON.stringify(locInput) === locBefore);
+
+    /* ---- validateTexturePages：页名/顺序严格一致 ---- */
+    var pages1 = [{ name: "model.png" }];
+    ok("validateTexturePages 单页一致", B.validateTexturePages(mainIdx, pages1).ok === true);
+    var pages2 = [{ name: "a.png" }, { name: "b.png" }];
+    var idx2 = mutate(multi, function (o) { o.files.textures = ["a.png", "b.png"]; });
+    var vp2 = B.validateTexturePages(idx2, pages2);
+    ok("validateTexturePages 两页 pageIndex 正确", vp2.ok === true && vp2.value[1].pageIndex === 1);
+    ok("validateTexturePages 页序颠倒拒绝", B.validateTexturePages(idx2, [{ name: "b.png" }, { name: "a.png" }]).ok === false);
+    ok("validateTexturePages 缺页拒绝", B.validateTexturePages(idx2, [{ name: "a.png" }]).ok === false);
+    ok("validateTexturePages 多页拒绝", B.validateTexturePages(mainIdx, [{ name: "model.png" }, { name: "model-2.png" }]).ok === false);
+    ok("validateTexturePages 大小写差异拒绝", B.validateTexturePages(mainIdx, [{ name: "MODEL.png" }]).ok === false);
+
+    /* ---- buildPatchedModel：只改目标字段 / 保留其余 ---- */
+    var rawModel = {
+      skeleton: { spine: "4.2.00", x: 1, unknown: { keep: true } },
+      bones: [
+        { name: "root" },
+        { name: "b_hair-back", x: 340, y: 12.5, rotation: 0, scaleX: 1, scaleY: 1, custom: "keep" },
+        { name: "b2", x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1 },
+      ],
+      slots: [
+        { name: "s1", bone: "root", attachment: "a" },
+        { name: "s2", bone: "b2", attachment: null, extra: 7 },
+      ],
+      skins: [{ name: "default", attachments: {} }],
+      animations: { idle: { bones: { root: {} } } },
+      constraints: [{ name: "c", type: "ik" }],
+      unknownTop: "keep",
+    };
+    var rawModelBefore = JSON.stringify(rawModel);
+    var values = [
+      { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1 },
+      { x: 341, y: 12.5, rotation: 0, scaleX: 1, scaleY: 1 },
+      { x: 0.1234567, y: 0.0000004, rotation: 0, scaleX: 1, scaleY: 1 },
+    ];
+    var patched = B.buildPatchedModel(rawModel, values, ["s2", "s1"]);
+    ok("buildPatchedModel 成功", patched.ok === true, JSON.stringify(patched.issues || []));
+    var pm = patched.value;
+    ok("buildPatchedModel 不修改入参", JSON.stringify(rawModel) === rawModelBefore);
+    eq("只改目标骨 x（+1）", pm.bones[1].x, 341);
+    ok("未改动骨不新增字段", pm.bones[0].x === undefined && pm.bones[0].scaleX === undefined);
+    ok("保留骨原有未知字段", pm.bones[1].custom === "keep");
+    near("六位小数舍入", pm.bones[2].x, 0.123457);
+    ok("槽顺序按当前层级", pm.slots[0].name === "s2" && pm.slots[1].name === "s1");
+    ok("保留 slot 额外字段", pm.slots[0].extra === 7);
+    ok("保留 skins/animations/constraints", same(pm.skins, rawModel.skins) && !!pm.animations.idle && pm.constraints[0].type === "ik");
+    ok("保留顶层未知字段", pm.unknownTop === "keep");
+    ok("重复应用幂等", same(B.buildPatchedModel(pm, values, ["s2", "s1"]).value, pm));
+    var noChange = B.buildPatchedModel(
+      rawModel,
+      [
+        { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1 },
+        { x: 340, y: 12.5, rotation: 0, scaleX: 1, scaleY: 1 },
+        { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1 },
+      ],
+      null
+    ).value;
+    ok("无改动与原文语义一致", same(noChange, rawModel));
+    ok("serializeModel 固定格式（1 空格缩进 + 结尾换行）", B.serializeModel(pm) === JSON.stringify(pm, null, 1) + "\n");
+    ok("serializeIndex 固定格式（2 空格 + 结尾换行）", B.serializeIndex(mainIdx) === JSON.stringify(mainIdx, null, 2) + "\n");
+
+    /* ---- 保存请求/响应纯校验 ---- */
+    var names = B.targetNames(mainIdx);
+    ok("targetNames 顺序 index→model→atlas→textures", same(names, ["index.json", "model.json", "model.atlas", "model.png"]));
+    var body = {
+      apiVersion: 1,
+      base: mainIdx.base,
+      index: mainIdx,
+      model: { name: "model.json", encoding: "utf8", data: "{}" },
+      atlas: { name: "model.atlas", encoding: "utf8", data: "model.png\n" },
+      textures: [{ name: "model.png", encoding: "base64", data: "iVBORw0KGgo=" }],
+    };
+    ok("checkSaveRequestShape 合法请求", B.checkSaveRequestShape(body, names).ok === true);
+    ok("checkSaveRequestShape 拒绝贴图数量不符", B.checkSaveRequestShape(mutate(body, function (o) { o.textures = []; }), names).ok === false);
+    ok("checkSaveRequestShape 拒绝 model 文件名不符", B.checkSaveRequestShape(mutate(body, function (o) { o.model.name = "other.json"; }), names).ok === false);
+    ok("checkSaveRequestShape 拒绝 encoding 不符", B.checkSaveRequestShape(mutate(body, function (o) { o.textures[0].encoding = "utf8"; }), names).ok === false);
+    ok("checkSaveRequestShape 拒绝 apiVersion 2", B.checkSaveRequestShape(mutate(body, function (o) { o.apiVersion = 2; }), names).ok === false);
+    var goodRes = { ok: true, apiVersion: 1, base: mainIdx.base, changed: ["model.json"], unchanged: ["index.json", "model.atlas", "model.png"] };
+    ok("checkSaveResponse 完整成功响应通过", B.checkSaveResponse(goodRes, names).ok === true);
+    ok("checkSaveResponse 拒绝缺项", B.checkSaveResponse({ ok: true, apiVersion: 1, changed: ["model.json"], unchanged: ["index.json"] }, names).ok === false);
+    ok(
+      "checkSaveResponse 拒绝同一文件同时出现在两表",
+      B.checkSaveResponse({ ok: true, apiVersion: 1, changed: ["model.json"], unchanged: ["index.json", "model.json", "model.atlas", "model.png"] }, names).ok === false
+    );
+    ok(
+      "checkSaveResponse 拒绝非目标文件",
+      B.checkSaveResponse({ ok: true, apiVersion: 1, changed: ["model.json"], unchanged: ["index.json", "model.atlas", "model.png", "x.json"] }, names).ok === false
+    );
+    ok("checkSaveResponse 拒绝 ok:false", B.checkSaveResponse({ ok: false, apiVersion: 1 }, names).ok === false);
+
+    /* ---- planBundleArchive：整包条目与限额 ---- */
+    var pkg = {
+      base: "assets/characters/deepseek/spine",
+      indexBytes: enc("{}"),
+      model: { name: "model.json", bytes: enc("{}") },
+      atlas: { name: "model.atlas", bytes: enc("model.png\n") },
+      textures: [{ name: "model.png", bytes: e2.bytes }],
+    };
+    var plan = B.planBundleArchive(pkg);
+    ok("planBundleArchive 合法整包", plan.ok === true, JSON.stringify(plan.issues || []));
+    ok("另存条目顺序 index→model→atlas→textures", same(plan.value.entries.map(function (x) { return x.name; }), ["index.json", "model.json", "model.atlas", "model.png"]));
+    eq("另存 ZIP 名取 base 末段", plan.value.zipName, "spine-bundle.zip");
+    eq("zipNameFor legacy 目录", B.zipNameFor("assets/characters/deepseek/spine/legacy-views"), "legacy-views-bundle.zip");
+    ok("planBundleArchive 拒绝缺贴图", B.planBundleArchive(mutate(pkg, function (o) { o.textures = []; })).ok === false);
+    ok("planBundleArchive 拒绝超 8MiB 贴图", B.planBundleArchive(mutate(pkg, function (o) {
+      o.textures = [{ name: "model.png", bytes: new Uint8Array(8 * 1024 * 1024 + 1) }];
+    })).ok === false);
+    var four = B.planBundleArchive({
+      base: "assets/characters/deepseek/spine",
+      indexBytes: enc('{\n  "schemaVersion": 1\n}\n'),
+      model: { name: "model.json", bytes: enc('{"bones":[]}\n') },
+      atlas: { name: "model.atlas", bytes: enc("model.png\nsize:2048,2048\n") },
+      textures: [{ name: "model.png", bytes: e2.bytes }],
+    });
+    var fourZip = B.buildZipStore(four.value.entries);
+    ok("4 文件整包 ZIP 构建成功", fourZip.ok === true);
+    eq("4 文件整包 EOCD 条目数", new DataView(fourZip.value.buffer, fourZip.value.byteOffset, fourZip.value.byteLength).getUint16(fourZip.value.length - 22 + 10, true), 4);
+
+    function validateOk(input, requireBase) {
+      var v = B.validateIndex(input, { requireBase: requireBase });
+      return v.ok ? v.value : input;
+    }
+  }
+
   function normDeg(deg) {
     var d = deg % 360;
     if (d > 180) d -= 360;
@@ -674,6 +1006,11 @@
       runExtra();
     } catch (err) {
       record(false, "额外断言执行异常", "无异常", String(err && err.message ? err.message : err), String(err && err.stack));
+    }
+    try {
+      runBundle();
+    } catch (err) {
+      record(false, "bundle 断言执行异常", "无异常", String(err && err.message ? err.message : err), String(err && err.stack));
     }
     result.finishedAt = new Date().toISOString();
     return result;

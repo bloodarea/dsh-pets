@@ -1,5 +1,5 @@
 /*
- * spine-core.js —— 「Spine 快速摆位与调试」纯逻辑核心。
+ * spine-core.js —— 「内置人物包管理器」纯逻辑核心。
  *
  * 契约：docs/review/2026-11-01-spine/contract-task1.md A 节（A1–A9）。
  * 边界：零依赖、无 DOM / Image / canvas / fetch；Node 与浏览器均可直接加载。

@@ -2,7 +2,7 @@
 chcp 65001 >nul
 setlocal enabledelayedexpansion
 rem ============================================================
-rem  启动「Spine 部件编辑器」：起本地静态服务并打开浏览器
+rem  启动「内置人物包管理器」：起本地静态服务并打开浏览器
 rem
 rem    start.bat                默认 8123，占用则自动往后找
 rem    start.bat --port 9000    指定端口

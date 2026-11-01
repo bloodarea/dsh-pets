@@ -3,108 +3,60 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Spine 快速摆位与调试 · dsh-pets</title>
+<title>内置人物包管理器</title>
 <link rel="stylesheet" href="ui.css">
 </head>
 <body>
 
+<!-- =====================================================================
+     自上而下：菜单条 → 视图/显示层条 → 画布+右栏 → 动画条 → 状态栏
+     ===================================================================== -->
 <header class="topbar">
-  <!-- 第一行：文件 / 工具 / 编辑 / 导出 / 视图 / 帮助 -->
-  <div class="bar bar-main" role="toolbar" aria-label="主工具条">
-    <div class="grp">
-      <button id="btnLoad" class="btn primary" type="button" title="选择 .json + .atlas + 图集图片">
-        <svg class="ic" aria-hidden="true"><use href="#i-open"></use></svg><span>载入文件…</span>
-      </button>
-      <div class="menu-wrap">
-        <button id="btnExamples" class="btn" type="button" aria-haspopup="menu" aria-expanded="false" title="载入示例角色或测试样张">
-          <svg class="ic" aria-hidden="true"><use href="#i-sample"></use></svg><span>示例</span>
-          <svg class="ic caret" aria-hidden="true"><use href="#i-chevron-down"></use></svg>
-        </button>
-        <div id="exampleMenu" class="menu" role="menu" aria-label="示例" hidden></div>
-      </div>
-      <input id="files" type="file" multiple accept=".json,.atlas,.png,.webp" hidden>
+  <!-- 菜单条：文件 / 编辑 / 视图 / 帮助 + 右侧标题 -->
+  <div class="menubar" role="menubar" aria-label="菜单条">
+    <div class="menu-wrap">
+      <button id="btnMenuFile" class="menubtn" type="button" role="menuitem" aria-haspopup="true"
+              aria-expanded="false" aria-controls="menuFile">文件</button>
+      <div id="menuFile" class="menu" role="menu" aria-label="文件" hidden></div>
     </div>
-
-    <div class="grp" role="group" aria-label="画布工具">
-      <button id="btnToolMove" class="btn" type="button" aria-pressed="true" title="移动工具（V）：拖动部件改变摆位">
-        <svg class="ic" aria-hidden="true"><use href="#i-move"></use></svg><span>移动</span><kbd>V</kbd>
-      </button>
-      <button id="btnToolPan" class="btn" type="button" aria-pressed="false" title="平移工具（按住 Space 临时平移，中键拖动也可）">
-        <svg class="ic" aria-hidden="true"><use href="#i-hand"></use></svg><span>平移</span><kbd>Space</kbd>
-      </button>
+    <div class="menu-wrap">
+      <button id="btnMenuEdit" class="menubtn" type="button" role="menuitem" aria-haspopup="true"
+              aria-expanded="false" aria-controls="menuEdit">编辑</button>
+      <div id="menuEdit" class="menu" role="menu" aria-label="编辑" hidden></div>
     </div>
-
-    <div class="grp" role="group" aria-label="编辑">
-      <button id="btnUndo" class="btn" type="button" disabled title="撤销（Ctrl/Cmd+Z）：一次拖动记一条">
-        <svg class="ic" aria-hidden="true"><use href="#i-undo"></use></svg><span>撤销</span><kbd id="kbdUndo">Ctrl+Z</kbd>
-      </button>
-      <button id="btnReset" class="btn" type="button" disabled title="重置到刚载入时的状态">
-        <svg class="ic" aria-hidden="true"><use href="#i-reset"></use></svg><span>重置</span>
-      </button>
+    <div class="menu-wrap">
+      <button id="btnMenuView" class="menubtn" type="button" role="menuitem" aria-haspopup="true"
+              aria-expanded="false" aria-controls="menuView">视图</button>
+      <div id="menuView" class="menu" role="menu" aria-label="视图" hidden></div>
     </div>
-
-    <div class="grp">
-      <button id="btnSave" class="btn" type="button" disabled title="导出运行时 JSON（不能还原 .spine 工程）">
-        <svg class="ic" aria-hidden="true"><use href="#i-save"></use></svg><span>导出 JSON</span>
-      </button>
+    <div class="menu-wrap">
+      <button id="btnMenuHelp" class="menubtn" type="button" role="menuitem" aria-haspopup="true"
+              aria-expanded="false" aria-controls="menuHelp">帮助</button>
+      <div id="menuHelp" class="menu" role="menu" aria-label="帮助" hidden></div>
     </div>
-
-    <div class="grp" role="group" aria-label="视图">
-      <button id="btnFit" class="btn" type="button" disabled title="适配全部（F）；Shift+F 适配选中">
-        <svg class="ic" aria-hidden="true"><use href="#i-fit"></use></svg><span>适配</span><kbd>F</kbd>
-      </button>
-      <div class="grp" role="group" aria-label="缩放" style="gap:2px">
-        <button id="btnZoomOut" class="btn btn-icon" type="button" disabled title="缩小（-）">
-          <svg class="ic" aria-hidden="true"><use href="#i-zoom-out"></use></svg>
-        </button>
-        <span id="zoomLabel" class="zoom-val mono dim" style="min-width:44px;text-align:center">—</span>
-        <button id="btnZoomIn" class="btn btn-icon" type="button" disabled title="放大（+）">
-          <svg class="ic" aria-hidden="true"><use href="#i-zoom-in"></use></svg>
-        </button>
-      </div>
-      <button id="btnHelp" class="btn btn-icon" type="button" title="帮助与快捷键（?）">
-        <svg class="ic" aria-hidden="true"><use href="#i-help"></use></svg>
-      </button>
-      <button id="btnPanel" class="btn btn-icon panel-toggle" type="button" aria-pressed="false" title="显示/隐藏右侧面板">
-        <svg class="ic" aria-hidden="true"><use href="#i-panel"></use></svg>
-      </button>
-    </div>
+    <span class="spacer" aria-hidden="true"></span>
+    <span class="app-title">内置人物包管理器</span>
   </div>
 
-  <!-- 第二行：动画预览 -->
-  <div class="bar bar-preview" role="toolbar" aria-label="动画预览">
-    <div class="grp">
-      <label class="lbl" for="animSel">动画</label>
-      <select id="animSel" disabled>
-        <option value="">（无）</option>
-      </select>
-      <button id="btnPlay" class="btn" type="button" disabled title="播放/暂停（P）">
-        <svg class="ic" aria-hidden="true"><use href="#i-play"></use></svg><span>播放</span><kbd>P</kbd>
+  <!-- 视图 / 显示层条（一行；<960px 允许换行但不横向溢出） -->
+  <div class="bar bar-view" role="toolbar" aria-label="视图与显示层">
+    <button id="btnFit" class="btn" type="button" disabled title="适配全部（F）；Shift+F 适配选中">
+      <svg class="ic" aria-hidden="true"><use href="#i-fit"></use></svg><span>适配</span><kbd>F</kbd>
+    </button>
+    <div class="zoomgrp" role="group" aria-label="缩放">
+      <button id="btnZoomOut" class="btn btn-icon" type="button" disabled title="缩小（-）">
+        <svg class="ic" aria-hidden="true"><use href="#i-zoom-out"></use></svg>
       </button>
-      <button id="btnSetup" class="btn" type="button" disabled title="回到绑定姿态（清除动画，恢复可摆位）">
-        <svg class="ic" aria-hidden="true"><use href="#i-joint"></use></svg><span>绑定姿态</span>
+      <span id="zoomLabel" class="zoom-val mono dim" title="当前缩放">—</span>
+      <button id="btnZoomIn" class="btn btn-icon" type="button" disabled title="放大（+）">
+        <svg class="ic" aria-hidden="true"><use href="#i-zoom-in"></use></svg>
       </button>
-      <button id="btnStop" class="btn" type="button" disabled title="回到动画开头">
-        <svg class="ic" aria-hidden="true"><use href="#i-skip-back"></use></svg><span>回到开头</span>
-      </button>
-      <label class="toggle" title="循环播放">
-        <input id="loopChk" type="checkbox" checked><span>循环</span>
-      </label>
-      <select id="speedSel" disabled aria-label="播放倍速">
-        <option value="0.25">0.25×</option><option value="0.5">0.5×</option>
-        <option value="1" selected>1×</option><option value="2">2×</option>
-      </select>
     </div>
-    <div class="grp timeline">
-      <input id="scrub" type="range" min="0" max="1000" value="0" disabled aria-label="时间轴">
-      <span id="timeLabel" class="time-label">0.00 / 0.00 s</span>
-    </div>
-  </div>
-
-  <!-- 第三行：显示层（可多选）+ 吸附 + 贴图强度 -->
-  <div class="bar bar-layers" role="group" aria-label="显示层与辅助">
-    <span class="lbl">显示层 · 可多选</span>
-    <div class="layers">
+    <button id="btnPanel" class="btn" type="button" aria-pressed="true" title="显示 / 隐藏右侧面板（窄屏为抽屉）">
+      <svg class="ic" aria-hidden="true"><use href="#i-panel"></use></svg><span>面板</span>
+    </button>
+    <span class="vsep" aria-hidden="true"></span>
+    <div class="layers" role="group" aria-label="显示层（可多选）">
       <label class="layer" title="显示角色贴图；贴图只影响显示，不勾也能选中/拖动部件">
         <input type="checkbox" data-layer="texture" checked><svg class="ic" aria-hidden="true"><use href="#i-texture"></use></svg><span>贴图</span>
       </label>
@@ -118,12 +70,11 @@
         <input type="checkbox" data-layer="weights"><svg class="ic" aria-hidden="true"><use href="#i-weight"></use></svg><span>权重</span>
       </label>
     </div>
-    <span class="sep" aria-hidden="true"></span>
     <label class="toggle" title="吸附：拖动时取整到 1 个单位（默认关闭）">
       <input id="snapChk" type="checkbox"><svg class="ic" aria-hidden="true"><use href="#i-magnet"></use></svg>
       <span>吸附</span><span id="snapState" class="state">关闭</span>
     </label>
-    <label class="pick" title="权重层配色：按骨配色 / 只看选中骨的热力">
+    <label class="pick" id="weightModeWrap" hidden title="权重层配色：按骨配色 / 只看选中骨的热力">
       <span class="lbl">权重配色</span>
       <select id="weightMode" aria-label="权重层配色">
         <option value="bone">按骨配色</option>
@@ -135,6 +86,8 @@
       <input id="texAlpha" type="range" min="0" max="100" step="1" value="100" aria-label="贴图强度">
       <span id="texAlphaV" class="val mono">100%</span>
     </label>
+    <!-- 载入只接受一个 index.json（契约 §2.2）；模型/图集/贴图由索引读取 -->
+    <input id="files" type="file" accept=".json" hidden>
   </div>
 </header>
 
@@ -145,8 +98,8 @@
     <!-- 空状态：未载入 -->
     <div id="emptyState" class="stage-overlay">
       <div class="card">
-        <h1>Spine 快速摆位与调试</h1>
-        <p>选择 JSON + atlas + 所有图集图片，先看姿势，再微调摆位。</p>
+        <h1>内置人物包管理器</h1>
+        <p>载入索引文件（index.json）；模型、图集与全部贴图由索引在同一目录读取，先看姿势，再微调摆位。</p>
         <div class="actions">
           <button id="btnEmptyLoad" class="btn primary" type="button">
             <svg class="ic" aria-hidden="true"><use href="#i-open"></use></svg><span>载入文件</span>
@@ -155,7 +108,7 @@
             <svg class="ic" aria-hidden="true"><use href="#i-sample"></use></svg><span>查看示例</span>
           </button>
         </div>
-        <p class="foot">也可以把这一组文件拖进画布 · 载入后拖动部件即可摆位</p>
+        <p class="foot">也可以把 index.json 拖进画布 · 载入后拖动部件即可摆位</p>
       </div>
     </div>
 
@@ -331,8 +284,38 @@
   </aside>
 </main>
 
+<!-- 动画条：整行，位于状态栏上方 -->
+<div class="bar bar-anim" role="toolbar" aria-label="动画预览">
+  <div class="grp">
+    <label class="lbl" for="animSel">动画</label>
+    <select id="animSel" disabled>
+      <option value="">（无）</option>
+    </select>
+    <button id="btnPlay" class="btn" type="button" disabled title="播放/暂停（P）">
+      <svg class="ic" aria-hidden="true"><use href="#i-play"></use></svg><span>播放</span><kbd>P</kbd>
+    </button>
+    <button id="btnSetup" class="btn" type="button" disabled title="回到绑定姿态（清除动画，恢复可摆位）">
+      <svg class="ic" aria-hidden="true"><use href="#i-joint"></use></svg><span>绑定姿态</span>
+    </button>
+    <button id="btnStop" class="btn" type="button" disabled title="回到动画开头">
+      <svg class="ic" aria-hidden="true"><use href="#i-skip-back"></use></svg><span>回到开头</span>
+    </button>
+    <label class="toggle" title="循环播放">
+      <input id="loopChk" type="checkbox" checked><span>循环</span>
+    </label>
+    <select id="speedSel" disabled aria-label="播放倍速">
+      <option value="0.25">0.25×</option><option value="0.5">0.5×</option>
+      <option value="1" selected>1×</option><option value="2">2×</option>
+    </select>
+  </div>
+  <div class="grp timeline">
+    <input id="scrub" type="range" min="0" max="1000" value="0" disabled aria-label="时间轴">
+    <span id="timeLabel" class="time-label">0.00 / 0.00 s</span>
+  </div>
+</div>
+
 <footer class="statusbar">
-  <span id="statusMsg" class="msg">未载入</span>
+  <span id="statusMsg" class="msg" aria-live="polite">未载入</span>
   <span class="spacer"></span>
   <span id="toolHint" class="hint">拖动移动 · 按住 Space 平移 · 滚轮缩放 · <b>?</b> 帮助</span>
 </footer>
@@ -360,7 +343,7 @@
           <tr><td>悬停</td><td>可移动件显示细描边</td></tr>
         </table>
       </div>
-      <div class="help-block">
+      <div class="help-block" id="helpKeys">
         <h3>键盘</h3>
         <table class="help-table">
           <tr><td><kbd>V</kbd></td><td>移动工具</td></tr>
@@ -372,8 +355,9 @@
           <tr><td><kbd>[</kbd> <kbd>]</kbd></td><td>层级下移 / 上移</td></tr>
           <tr><td><kbd>H</kbd></td><td>显示 / 隐藏选中部件</td></tr>
           <tr><td><kbd id="helpModKey">Ctrl</kbd>+<kbd>Z</kbd></td><td>撤销</td></tr>
+          <tr><td><kbd id="helpModSave">Ctrl</kbd>+<kbd>S</kbd></td><td>保存文件（有写回目标时；输入框聚焦不劫持）</td></tr>
           <tr><td><kbd>+</kbd> <kbd>-</kbd></td><td>放大 / 缩小</td></tr>
-          <tr><td><kbd>Esc</kbd></td><td>取消拖动 / 清除选择 / 关闭浮层</td></tr>
+          <tr><td><kbd>Esc</kbd></td><td>取消拖动 / 清除选择 / 关闭浮层与菜单</td></tr>
           <tr><td><kbd>?</kbd></td><td>打开本帮助</td></tr>
         </table>
       </div>
@@ -385,9 +369,11 @@
           <tr><td>吸附</td><td>默认关闭；打开后拖动取整到 1 个单位</td></tr>
           <tr><td>显示层</td><td>四个显示层可任意叠加；贴图只影响显示，不改变编辑权限</td></tr>
           <tr><td>显示 / 锁定</td><td>只影响查看器，不写入 JSON</td></tr>
-          <tr><td>导出</td><td>运行时 JSON（骨骼 x/y + slots 顺序），不能还原 .spine 工程</td></tr>
+          <tr><td>保存文件</td><td>就地回写索引目录下的 index.json / model.json / atlas / 贴图；需要 serve.py（只读服务下置灰）</td></tr>
+          <tr><td>另存文件</td><td>下载一个 zip：index.json + model.json + model.atlas + 贴图，纯前端打包</td></tr>
+          <tr><td>导出格式</td><td>运行时 JSON 补丁（骨骼 x/y/rotation/scale + slots 顺序），不能还原 .spine 工程</td></tr>
         </table>
-        <p class="help-note">输入框 / 下拉框聚焦时不会触发上面的单键快捷键。摆位只在绑定姿态（动画选「（无）」）下进行，预览动画时检查器会给出「返回绑定姿态」的提示。</p>
+        <p class="help-note">输入框 / 下拉框 / 菜单聚焦时不会触发上面的单键快捷键。摆位只在绑定姿态（动画选「（无）」）下进行，预览动画时检查器会给出「返回绑定姿态」的提示。</p>
       </div>
     </div>
   </div>
@@ -395,6 +381,7 @@
 
 <script src="icons.js"></script>
 <script src="spine-core.js"></script>
+<script src="bundle.js"></script>
 <script src="fixtures/cases.js"></script>
 <script src="app.js"></script>
 </body>

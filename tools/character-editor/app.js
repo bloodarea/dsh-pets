@@ -1,5 +1,5 @@
 /*
- * Spine 快速摆位与调试 · 应用层
+ * 内置人物包管理器 · 应用层
  *
  * 分层（docs/review/2026-11-01-spine/contract-task1.md A1）：
  *   - 纯数学（解析/采样/矩阵/IK/几何/蒙皮/命中）在 spine-core.js；
@@ -103,6 +103,15 @@
     drag: null,
     spaceDown: false,
     helpOpen: false,
+
+    /* 索引整包 / 保存（契约 §2.1、§4.1） */
+    bundle: null,
+    writeState: "checking",
+    cap: null,
+    loading: false,
+    saveBusy: false,
+    zipBusy: false,
+    loadGen: 0,
   };
 
   const cv = $("cv");
@@ -160,6 +169,10 @@
     state.pageImages = input.pageImages || [];
     state.label = input.label || "";
     state.source = input.source || "";
+    state.bundle = input.bundle || null;
+    if (state.writeState === "uncertain") {
+      state.writeState = state.cap && state.cap.saveBundle ? "ready" : "readonly";
+    }
 
     state.boneList = model.bones.map((b, i) => ({
       name: b.name,
@@ -216,72 +229,221 @@
     return true;
   }
 
-  async function loadFiles(fileList) {
-    const files = Array.prototype.slice.call(fileList || []);
-    if (!files.length) return;
-    const jsonFiles = files.filter((f) => /\.json$/i.test(f.name));
-    const atlasFiles = files.filter((f) => /\.atlas$/i.test(f.name));
-    const imgFiles = files.filter((f) => /\.(png|webp|jpe?g)$/i.test(f.name));
-    const retry = () => $("files").click();
-    if (!jsonFiles.length) return reportLoadError(new LoadError("缺少 .json 骨骼文件"), "重新选择", retry);
-    if (!atlasFiles.length) return reportLoadError(new LoadError("缺少 .atlas 图集描述文件"), "重新选择", retry);
-    if (!imgFiles.length) return reportLoadError(new LoadError("缺少图集图片（.png / .webp）"), "重新选择", retry);
-    const urls = [];
+  /* --- 载入：统一索引流水线（契约 §2.1） ---------------------------------- */
+  const INDEX_NAME = "index.json";
+  const EXAMPLE_INDEX = "assets/characters/deepseek/spine/index.json";
+  const LEGACY_INDEX = "assets/characters/deepseek/spine/legacy-views/index.json";
+
+  function issuesToError(issues, prefix) {
+    const list = issues || [];
+    const first = list[0] || { message: "（无详情）" };
+    const rest = list
+      .slice(1, 4)
+      .map((i) => i.message)
+      .join("；");
+    const paths = list
+      .map((i) => i.path)
+      .filter(Boolean)
+      .join("、");
+    return new LoadError((prefix || "") + first.message, rest || paths);
+  }
+
+  function textBytes(text) {
+    return new TextEncoder().encode(String(text));
+  }
+
+  function decodeUtf8(bytes, what) {
     try {
-      const atlasText = await atlasFiles[0].text();
-      const raw = JSON.parse(await jsonFiles[0].text());
-      const parsed = parseBundle(raw, atlasText);
-      const pageImages = [];
-      for (let i = 0; i < parsed.atlas.pages.length; i++) {
-        const page = parsed.atlas.pages[i];
-        const file = imgFiles.find((f) => f.name === page.name) || (i === 0 ? imgFiles[0] : null);
-        if (!file) throw new LoadError("缺少图集页图片：" + page.name);
-        const url = URL.createObjectURL(file);
-        urls.push(url);
-        pageImages.push(await loadImage(url, file.name));
+      return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch (e) {
+      throw new LoadError(what + " 不是合法 UTF-8", e.message);
+    }
+  }
+
+  function guessMime(name) {
+    if (/\.webp$/i.test(name)) return "image/webp";
+    if (/\.jpe?g$/i.test(name)) return "image/jpeg";
+    return "image/png";
+  }
+
+  function loadImageFromBytes(bytes, name) {
+    const blob = new Blob([bytes], { type: guessMime(name) });
+    const url = URL.createObjectURL(blob);
+    return loadImage(url, name).finally(() => setTimeout(() => URL.revokeObjectURL(url), 1000));
+  }
+
+  async function fetchBytes(url) {
+    let res;
+    try {
+      res = await fetch(url, { cache: "no-store" });
+    } catch (e) {
+      throw new LoadError("读不到 " + url.replace(/^\//, "") + "（网络错误）", e && e.message);
+    }
+    if (!res.ok) {
+      throw new LoadError("读不到 " + url.replace(/^\//, "") + "（HTTP " + res.status + "），请确认索引 base 与文件名");
+    }
+    return new Uint8Array(await res.arrayBuffer());
+  }
+
+  function normalizedIndex(org, base) {
+    const out = { schemaVersion: 1, base: base };
+    if (org && typeof org.label === "string") out.label = org.label;
+    out.files = { model: org.files.model, atlas: org.files.atlas, textures: org.files.textures.slice() };
+    return out;
+  }
+
+  /**
+   * 索引载入主流程：索引校验 → 定位 → GET 三件套 → 解析/页对齐 → 解码 → applyLoaded 一次提交。
+   * @param {string|object} indexSource 索引文本或已解析对象
+   * @param {{entry?:string, observedBase?:string|null, requireBase?:boolean, retry?:Function}} opts
+   */
+  async function loadIndexEntry(indexSource, opts) {
+    const o = opts || {};
+    const lib = window.SpineBundle;
+    if (!lib) return reportLoadError(new LoadError("bundle.js 未加载，无法解析索引"));
+    const gen = ++state.loadGen;
+    state.loading = true;
+    syncToolbar();
+    try {
+      const validated =
+        typeof indexSource === "string"
+          ? lib.parseIndexText(indexSource, { requireBase: o.requireBase !== false })
+          : lib.validateIndex(indexSource, { requireBase: o.requireBase !== false });
+      if (!validated.ok) throw issuesToError(validated.issues, "索引校验失败：");
+      const norm = validated.value;
+
+      const loc = lib.resolveIndexLocation(norm, o.observedBase == null ? null : o.observedBase);
+      if (!loc.ok) throw issuesToError(loc.issues, "索引定位失败：");
+      const base = loc.value.base;
+
+      setStatus("载入索引：" + base + " …");
+      const modelUrl = "/" + base + "/" + norm.files.model;
+      const atlasUrl = "/" + base + "/" + norm.files.atlas;
+      const fetched = await Promise.all([fetchBytes(modelUrl), fetchBytes(atlasUrl)]);
+      if (gen !== state.loadGen) return false;
+      const modelBytes = fetched[0];
+      const atlasBytes = fetched[1];
+
+      const modelText = decodeUtf8(modelBytes, norm.files.model);
+      const atlasText = decodeUtf8(atlasBytes, norm.files.atlas);
+      let raw;
+      try {
+        raw = JSON.parse(modelText);
+      } catch (e) {
+        throw new LoadError(norm.files.model + " 不是合法 JSON", e && e.message);
       }
-      applyLoaded({
+      const parsed = parseBundle(raw, atlasText);
+
+      const pages = lib.validateTexturePages(norm, parsed.atlas.pages);
+      if (!pages.ok) throw issuesToError(pages.issues, "贴图清单不一致：");
+
+      const textureBytesByName = Object.create(null);
+      const pageImages = [];
+      for (const page of parsed.atlas.pages) {
+        const bytes = await fetchBytes("/" + base + "/" + page.name);
+        if (gen !== state.loadGen) return false;
+        textureBytesByName[page.name] = bytes;
+        pageImages.push(await loadImageFromBytes(bytes, page.name));
+        if (gen !== state.loadGen) return false;
+      }
+
+      const index = normalizedIndex(norm, base);
+      const label = (norm.label || base.split("/").pop()) + "（" + base + "）";
+      return applyLoaded({
         raw: raw,
         atlasText: atlasText,
         pageImages: pageImages,
-        label: jsonFiles[0].name + " + " + atlasFiles[0].name + " + " + imgFiles.map((f) => f.name).join(" + "),
-        source: "file",
+        label: label,
+        source: o.entry || "index",
+        bundle: {
+          entry: o.entry || "index",
+          base: base,
+          indexPath: base + "/" + INDEX_NAME,
+          index: index,
+          indexBytes: textBytes(lib.serializeIndex(index)),
+          modelName: norm.files.model,
+          atlasName: norm.files.atlas,
+          textureNames: norm.files.textures.slice(),
+          modelBytes: modelBytes,
+          modelText: modelText,
+          atlasBytes: atlasBytes,
+          atlasText: atlasText,
+          textureBytesByName: textureBytesByName,
+          canSave: true,
+          canArchive: true,
+          reason: "",
+        },
       });
     } catch (e) {
-      reportLoadError(e, "重新选择", retry);
+      if (gen !== state.loadGen) return false;
+      reportLoadError(e instanceof LoadError ? e : new LoadError(String((e && e.message) || e)), "重试", o.retry);
+      return false;
     } finally {
-      for (const u of urls) setTimeout(() => URL.revokeObjectURL(u), 1000);
+      if (gen === state.loadGen) {
+        state.loading = false;
+        syncToolbar();
+      }
     }
   }
 
-  async function loadExample() {
-    const base = "../../assets/characters/deepseek/spine";
-    setStatus("载入示例中…");
-    try {
-      const res = await Promise.all([
-        fetch(base + "/model.json", { cache: "no-cache" }),
-        fetch(base + "/model.atlas", { cache: "no-cache" }),
-      ]);
-      const jsonRes = res[0];
-      const atlasRes = res[1];
-      if (!jsonRes.ok) throw new LoadError("model.json HTTP " + jsonRes.status);
-      if (!atlasRes.ok) throw new LoadError("model.atlas HTTP " + atlasRes.status);
-      const raw = await jsonRes.json();
-      const atlasText = await atlasRes.text();
-      const parsed = parseBundle(raw, atlasText);
-      const pageImages = [];
-      for (const page of parsed.atlas.pages) pageImages.push(await loadImage(base + "/" + page.name, page.name));
-      applyLoaded({ raw: raw, atlasText: atlasText, pageImages: pageImages, label: "示例 · deepseek", source: "example" });
-    } catch (e) {
-      reportLoadError(
-        new LoadError("载入示例失败：" + e.message + "（本页需通过 http 打开，见 serve.py）", e.detail),
-        "重试",
-        loadExample
+  /** picker / 拖入：只接受一个 index.json（契约 §2.2） */
+  async function loadFiles(fileList) {
+    const files = Array.prototype.slice.call(fileList || []);
+    if (!files.length) return false;
+    const retry = () => $("files").click();
+    if (files.length > 1) {
+      return reportLoadError(new LoadError("请选择一个 index.json；模型、图集和贴图由索引读取", "本次选了 " + files.length + " 个文件"));
+    }
+    const file = files[0];
+    if (!/\.json$/i.test(file.name) || file.name !== INDEX_NAME) {
+      return reportLoadError(
+        new LoadError("请选择一个 index.json；模型、图集和贴图由索引读取", "实际文件名：" + file.name),
+        "重新选择",
+        retry
       );
     }
+    let text;
+    try {
+      text = await file.text();
+    } catch (e) {
+      return reportLoadError(new LoadError("读取索引失败：" + ((e && e.message) || e)), "重新选择", retry);
+    }
+    return loadIndexEntry(text, { entry: "picker", requireBase: true, retry: retry });
   }
 
+  /** ?index= / 示例：按仓库根相对路径读取索引（契约 §2.3） */
+  async function loadIndexByPath(indexPath, entry) {
+    const lib = window.SpineBundle;
+    if (!lib) return reportLoadError(new LoadError("bundle.js 未加载，无法解析索引"));
+    const p = lib.parseIndexParam(indexPath);
+    if (!p.ok) return reportLoadError(issuesToError(p.issues, "?index= 参数无效："));
+    let text;
+    try {
+      text = decodeUtf8(await fetchBytes("/" + p.value.indexPath), p.value.indexPath);
+    } catch (e) {
+      return reportLoadError(e instanceof LoadError ? e : new LoadError(String((e && e.message) || e)));
+    }
+    return loadIndexEntry(text, {
+      entry: entry || "url",
+      requireBase: false,
+      observedBase: p.value.observedBase,
+    });
+  }
+
+  function loadExample() {
+    return loadIndexByPath(EXAMPLE_INDEX, "example");
+  }
+
+  function loadLegacyExample() {
+    return loadIndexByPath(LEGACY_INDEX, "example");
+  }
+
+  /**
+   * ?rig= 开发兼容：保留读取，但保存禁用、另存尽力可用（契约 §2.4）。
+   * 目录与文件名都要能通过 v1 文法才合成只读索引。
+   */
   async function loadRig(param) {
+    const lib = window.SpineBundle;
     const rig = String(param || "").trim();
     if (!rig) return false;
     if (/^[a-z]+:/i.test(rig) || rig.startsWith("//") || rig.includes("..")) {
@@ -289,23 +451,30 @@
       return false;
     }
     const wanted = rig.replace(/\.json$/i, "") + ".json";
-    // 先按页面相对路径找，再按站点根（工具在 /tools/spine-part-editor/ 下，root = ../../）
-    // 站点根相对优先（文档里的 ?rig=references/... 就是这种写法，避免先打一次 404）
+    // 站点根相对优先（工具在 /tools/character-editor/ 下，root = ../../），再退回页面相对
     const rootRel = new URL("../../", location.href).pathname;
     const candidates = [rootRel + wanted, wanted];
+    const gen = ++state.loadGen;
+    state.loading = true;
+    syncToolbar();
     setStatus("载入 rig：" + wanted);
     try {
       let jsonPath = null;
-      let raw = null;
+      let modelBytes = null;
       let lastStatus = 0;
       for (const cand of candidates) {
-        const res = await fetch(cand, { cache: "no-cache" });
-        if (res.ok) {
+        let res = null;
+        try {
+          res = await fetch(cand, { cache: "no-store" });
+        } catch (_) {
+          res = null;
+        }
+        if (res && res.ok) {
           jsonPath = cand;
-          raw = await res.json();
+          modelBytes = new Uint8Array(await res.arrayBuffer());
           break;
         }
-        lastStatus = res.status;
+        lastStatus = res ? res.status : 0;
       }
       if (!jsonPath) {
         throw new LoadError(
@@ -313,30 +482,76 @@
           "已试：" + candidates.join(" / ")
         );
       }
-      const base = jsonPath.replace(/[^/]*$/, "");
-      const atlasPath = jsonPath.replace(/\.json$/i, ".atlas");
-      const atlasRes = await fetch(atlasPath, { cache: "no-cache" });
-      if (!atlasRes.ok) {
-        throw new LoadError("缺少图集：" + atlasPath + "（HTTP " + atlasRes.status + "）", "同目录需要同名 .atlas 与图集图片");
+      const modelText = decodeUtf8(modelBytes, wanted);
+      let raw;
+      try {
+        raw = JSON.parse(modelText);
+      } catch (e) {
+        throw new LoadError(wanted + " 不是合法 JSON", e && e.message);
       }
-      const atlasText = await atlasRes.text();
+      const relPath = new URL(jsonPath, location.href).pathname.replace(/^\//, "");
+      const modelName = relPath.split("/").pop();
+      const dir = relPath.slice(0, relPath.length - modelName.length).replace(/\/$/, "");
+      const atlasName = modelName.replace(/\.json$/i, ".atlas");
+      const atlasBytes = await fetchBytes("/" + (dir ? dir + "/" : "") + atlasName);
+      const atlasText = decodeUtf8(atlasBytes, atlasName);
       const parsed = parseBundle(raw, atlasText);
+      const textureBytesByName = Object.create(null);
       const pageImages = [];
       for (const page of parsed.atlas.pages) {
-        const url = base + page.name;
-        try {
-          pageImages.push(await loadImage(url, url));
-        } catch (e) {
-          throw new LoadError("缺少图集图片：" + url, e.message);
-        }
+        const bytes = await fetchBytes("/" + (dir ? dir + "/" : "") + page.name);
+        textureBytesByName[page.name] = bytes;
+        pageImages.push(await loadImageFromBytes(bytes, page.name));
       }
-      applyLoaded({ raw: raw, atlasText: atlasText, pageImages: pageImages, label: "rig · " + jsonPath.split("/").pop(), source: "rig" });
-      return true;
+      if (gen !== state.loadGen) return false;
+
+      const textureNames = parsed.atlas.pages.map((p) => p.name);
+      const index = {
+        schemaVersion: 1,
+        base: dir,
+        label: "rig · " + modelName,
+        files: { model: modelName, atlas: atlasName, textures: textureNames.slice() },
+      };
+      const check = lib ? lib.validateIndex(index, { requireBase: true }) : { ok: false };
+      const canArchive = !!(dir && check.ok);
+      return applyLoaded({
+        raw: raw,
+        atlasText: atlasText,
+        pageImages: pageImages,
+        label: "rig · " + relPath,
+        source: "rig",
+        bundle: {
+          entry: "rig",
+          base: dir || null,
+          indexPath: dir ? dir + "/" + INDEX_NAME : null,
+          index: canArchive ? normalizedIndex(check.value, dir) : index,
+          indexBytes: canArchive ? textBytes(lib.serializeIndex(normalizedIndex(check.value, dir))) : null,
+          modelName: modelName,
+          atlasName: atlasName,
+          textureNames: textureNames,
+          modelBytes: modelBytes,
+          modelText: modelText,
+          atlasBytes: atlasBytes,
+          atlasText: atlasText,
+          textureBytesByName: textureBytesByName,
+          canSave: false,
+          canArchive: canArchive,
+          reason: "已载入但无写回目标：开发 rig 未通过索引载入，可另存 ZIP 或改用 ?index=",
+        },
+      });
     } catch (e) {
+      if (gen !== state.loadGen) return false;
       reportLoadError(
-        new LoadError(String(e.message || e), e.detail || "同目录需要 <同名>.atlas + 图集图片（page 名要与 atlas 一致）")
+        e instanceof LoadError
+          ? e
+          : new LoadError(String((e && e.message) || e), "同目录需要 <同名>.atlas + 图集图片（page 名要与 atlas 一致）")
       );
       return false;
+    } finally {
+      if (gen === state.loadGen) {
+        state.loading = false;
+        syncToolbar();
+      }
     }
   }
 
@@ -353,6 +568,24 @@
         pageImages: pages.map((p) => textureSpecToCanvas(p)),
         label: "样张 · " + (fx.label || id),
         source: "fixture",
+        bundle: {
+          entry: "fixture",
+          base: null,
+          indexPath: null,
+          index: null,
+          indexBytes: null,
+          modelName: null,
+          atlasName: null,
+          textureNames: [],
+          modelBytes: null,
+          modelText: null,
+          atlasBytes: null,
+          atlasText: fx.atlasText,
+          textureBytesByName: Object.create(null),
+          canSave: false,
+          canArchive: false,
+          reason: "已载入但无写回目标，且缺少可导出的原始文件字节；请选择 index.json",
+        },
       });
       if (pages.length > 1) notice("warn", "样张图集有 " + pages.length + " 页，已全部载入");
     } catch (e) {
@@ -392,10 +625,11 @@
   function reportLoadError(err, actionLabel, actionFn) {
     const message = (err && err.message) || String(err);
     const detail = err && err.detail ? "（" + err.detail + "）" : "";
-    setStatus("载入失败：" + message, "error");
-    notice("error", "载入失败：" + message + detail, actionLabel && actionFn ? [{ label: actionLabel, onClick: actionFn }] : []);
+    const kept = state.model ? "；载入失败，已保留原模型" : "";
+    setStatus("载入失败：" + message + kept, "error");
+    notice("error", "载入失败：" + message + detail + kept, actionLabel && actionFn ? [{ label: actionLabel, onClick: actionFn }] : []);
     try {
-      console.info("[spine-editor] 载入失败：", message, detail);
+      console.info("[character-editor] 载入失败：", message, detail);
     } catch (_) {
       /* 忽略 */
     }
@@ -1219,7 +1453,7 @@
   }
   function resetAll() {
     if (!state.initial) return;
-    if (snapshot() === state.initial && !state.hidden.size && !state.locked.size) return setStatus("已经是载入时的状态");
+    if (snapshot() === state.initial && !state.hidden.size && !state.locked.size) return setStatus("已经是最近保存状态");
     pushUndo(snapshot());
     applySnapshot(state.initial);
     state.hidden = new Set();
@@ -1236,7 +1470,7 @@
     }
     syncAll();
     render();
-    setStatus("已重置到载入时的状态");
+    setStatus("已重置到最近保存状态");
   }
   function nudgeBone(axis, delta) {
     if (state.sel < 0) return;
@@ -1311,8 +1545,8 @@
     if (commit(before)) {
       syncAll();
       render();
-      setStatus("已恢复 " + slot.name + " 的变换");
-    } else setStatus("该部件已经在载入时的状态");
+      setStatus("已恢复 " + slot.name + " 的变换（最近保存状态）");
+    } else setStatus("该部件已经在最近保存状态");
   }
 
   /* ==========================================================================
@@ -1423,22 +1657,18 @@
     syncDebug();
     syncFooter();
     syncStageOverlays();
+    syncPanel();
     updateCursor();
   }
   function syncToolbar() {
     const loaded = !!state.model;
-    $("btnUndo").disabled = !loaded || state.undo.length === 0;
-    $("btnReset").disabled = !loaded;
-    $("btnSave").disabled = !loaded;
     $("btnFit").disabled = !loaded;
     $("btnZoomIn").disabled = !loaded;
     $("btnZoomOut").disabled = !loaded;
-    $("btnToolMove").setAttribute("aria-pressed", state.tool === "move" ? "true" : "false");
-    $("btnToolPan").setAttribute("aria-pressed", state.tool === "pan" ? "true" : "false");
-    $("btnToolMove").classList.toggle("on", state.tool === "move");
-    $("btnToolPan").classList.toggle("on", state.tool === "pan");
+    if ($("btnPanel")) $("btnPanel").disabled = false;
     syncZoom();
     syncAnimSelect();
+    syncMenus();
   }
   function syncList() {
     const box = $("list");
@@ -1596,6 +1826,9 @@
     $("texAlpha").value = state.texAlpha;
     $("texAlphaV").textContent = Math.round(state.texAlpha) + "%";
     $("weightMode").value = state.weightMode;
+    const weightWrap = $("weightModeWrap");
+    if (weightWrap) weightWrap.hidden = !state.show.weights;
+    syncMenus();
   }
   function syncDebug() {
     const loaded = !!state.model;
@@ -1898,9 +2131,18 @@
   }
   function onKeyDown(e) {
     if (isTypingTarget(e.target)) return;
+    const inChrome = !!(e.target && e.target.closest && e.target.closest(".menubar, .menu"));
     const mod = e.ctrlKey || e.metaKey;
     const key = e.key;
     const lower = key.length === 1 ? key.toLowerCase() : key;
+
+    if (key === "Escape" && anyMenuOpen()) {
+      e.preventDefault();
+      closeMenus();
+      return;
+    }
+    if (inChrome) return;
+
     if (key === "Escape") {
       if (state.helpOpen) return closeHelp();
       if (state.drag) {
@@ -1917,6 +2159,10 @@
     if (mod && lower === "z") {
       e.preventDefault();
       return undo();
+    }
+    if (mod && lower === "s") {
+      e.preventDefault();
+      return saveToDisk();
     }
     if (key === " ") {
       e.preventDefault();
@@ -1982,11 +2228,16 @@
     if (state.helpOpen) closeHelp();
     else openHelp();
   }
-  function openHelp() {
+  function openHelp(section) {
     helpReturnFocus = document.activeElement;
     state.helpOpen = true;
     $("helpOverlay").hidden = false;
     $("helpClose").focus();
+    if (section === "keys" && $("helpKeys")) {
+      $("helpKeys").scrollIntoView({ block: "nearest" });
+      $("helpKeys").classList.add("is-target");
+      setTimeout(() => $("helpKeys").classList.remove("is-target"), 900);
+    }
   }
   function closeHelp() {
     state.helpOpen = false;
@@ -2001,95 +2252,428 @@
   }
 
   /* ==========================================================================
-   * 14. 导出（只在原 JSON 上打补丁）
+   * 14. 保存（就地回写）/ 另存（ZIP）—— 契约 §4.2 / §4.4
    * ====================================================================== */
-  function exportJson() {
-    if (!state.raw) return;
-    const raw = typeof structuredClone === "function" ? structuredClone(state.raw) : JSON.parse(JSON.stringify(state.raw));
-    const changed = [];
-    raw.bones = (raw.bones || []).map((rb, i) => {
-      const cur = state.boneList[i];
-      if (!cur) return rb;
-      const out = Object.assign({}, rb);
-      for (const f of FIELDS) {
-        const dflt = f === "scaleX" || f === "scaleY" ? 1 : 0;
-        const before = rb[f] == null ? dflt : rb[f];
-        const now = cur[f] == null ? dflt : cur[f];
-        if (Math.abs(now - before) > 1e-9) {
-          out[f] = round(now, 6);
-          changed.push(cur.name + "." + f);
-        }
-      }
-      return out;
-    });
-    const byName = Object.create(null);
-    for (const s of raw.slots || []) byName[s.name] = s;
-    raw.slots = state.slots.map((s) =>
-      Object.assign({}, byName[s.name] || { name: s.name, bone: s.boneName, attachment: s.attachment })
-    );
-    const blob = new Blob([JSON.stringify(raw, null, 1)], { type: "application/json" });
+  function currentBoneValues() {
+    return state.boneList.map((b) => ({
+      name: b.name,
+      x: b.x,
+      y: b.y,
+      rotation: b.rotation,
+      scaleX: b.scaleX,
+      scaleY: b.scaleY,
+    }));
+  }
+
+  function currentSlotOrder() {
+    return state.slots.map((s) => s.name);
+  }
+
+  /** 与另存/保存共用的补丁：无改动时复用缓存原文（契约 §4.2.1） */
+  function patchedModel() {
+    const lib = window.SpineBundle;
+    const res = lib.buildPatchedModel(state.raw, currentBoneValues(), currentSlotOrder());
+    if (!res.ok) throw issuesToError(res.issues, "生成模型补丁失败：");
+    const reuse = snapshot() === state.initial && !!(state.bundle && state.bundle.modelText);
+    return { patched: res.value, text: reuse ? state.bundle.modelText : lib.serializeModel(res.value), reused: reuse };
+  }
+
+  function toBase64(bytes) {
+    const chunk = 0x8000;
+    let out = "";
+    for (let i = 0; i < bytes.length; i += chunk) {
+      out += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    }
+    return btoa(out);
+  }
+
+  function downloadBlob(blob, name) {
     const a = document.createElement("a");
     const url = URL.createObjectURL(blob);
     a.href = url;
-    a.download = (state.label || "model").replace(/[^\w.-]+/g, "_").slice(0, 40) + ".json";
+    a.download = name;
+    document.body.appendChild(a);
     a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+  }
+
+  /** 保存成功后把可编辑骨字段与落盘值对齐（契约 §4.2.5），setup 缓存同步 */
+  function alignBonesToSaved(patched) {
+    const saved = (patched && patched.bones) || [];
+    for (let i = 0; i < state.boneList.length; i++) {
+      const cur = state.boneList[i];
+      if (!cur) continue;
+      const src = saved[i];
+      const setup = state.model && state.model.bones[cur.index];
+      for (const f of FIELDS) {
+        const dflt = f === "scaleX" || f === "scaleY" ? 1 : 0;
+        const v = !src || src[f] == null ? dflt : src[f];
+        cur[f] = v;
+        if (setup) setup[f] = v;
+      }
+    }
+  }
+
+  function saveTarget() {
+    const b = state.bundle;
+    return b && b.canSave && b.base && b.index ? b : null;
+  }
+
+  function canSaveNow() {
+    if (!saveTarget()) return false;
+    if (state.writeState !== "ready") return false;
+    if (state.saveBusy || state.zipBusy || state.loading) return false;
+    if (state.drag) return false;
+    return true;
+  }
+
+  function saveReason() {
+    if (state.loading) return "载入中…";
+    if (state.saveBusy) return "正在保存…";
+    if (state.zipBusy) return "正在生成 ZIP…";
+    if (!state.model) return "尚未载入；请选择 index.json";
+    if (state.writeState === "checking") return "正在检查写入服务…";
+    if (state.writeState === "uncertain") return "保存结果待确认；请重新载入后再就地保存";
+    if (!saveTarget()) {
+      const b = state.bundle;
+      if (b && b.reason) return b.reason;
+      return "已载入但无写回目标；请选择 index.json";
+    }
+    if (state.writeState === "readonly") return "当前服务只读，可另存文件（ZIP）；使用启动脚本启用保存";
+    if (state.drag) return "请结束当前拖动";
+    return "保存到 " + state.bundle.base;
+  }
+
+  function canArchiveNow() {
+    const b = state.bundle;
+    if (!b || !b.canArchive) return false;
+    if (state.saveBusy || state.zipBusy || state.loading) return false;
+    return true;
+  }
+
+  function archiveReason() {
+    if (state.loading) return "载入中…";
+    if (state.saveBusy) return "正在保存…";
+    if (state.zipBusy) return "正在生成 ZIP…";
+    if (!state.model) return "尚未载入；请选择 index.json";
+    const b = state.bundle;
+    if (b && b.reason) return b.reason;
+    if (canArchiveNow()) return "打包 index.json + model + atlas + 贴图（ZIP 下载）";
+    return "整包字节不完整，无法另存";
+  }
+
+  function enterUncertain(message) {
+    state.writeState = "uncertain";
+    syncAll();
+    notice("error", message, [{ label: "重新载入", onClick: reloadCurrent }]);
+    setStatus(message, "error");
+    return false;
+  }
+
+  function reloadCurrent() {
+    const b = state.bundle;
+    if (!b) return false;
+    if (b.entry === "picker" || b.entry === "example" || b.entry === "url" || b.entry === "index") {
+      return loadIndexByPath(b.indexPath, b.entry === "picker" ? "picker" : "url");
+    }
+    if (b.entry === "rig") return loadRig(b.indexPath || "");
+    return false;
+  }
+
+  function flushPendingEdits() {
+    const active = document.activeElement;
+    if (!active || !active.id) return;
+    if (["posX", "posY", "rotX", "scaleX", "scaleY"].indexOf(active.id) < 0) return;
+    active.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  async function saveToDisk() {
+    if (!canSaveNow()) {
+      setStatus(saveReason(), "warn");
+      return false;
+    }
+    const lib = window.SpineBundle;
+    const b = saveTarget();
+    flushPendingEdits();
+
+    let patch;
+    try {
+      patch = patchedModel();
+    } catch (e) {
+      setStatus(e.message, "error");
+      notice("error", e.message);
+      return false;
+    }
+
+    let body;
+    try {
+      body = {
+        apiVersion: 1,
+        base: b.base,
+        index: b.index,
+        model: { name: b.modelName, encoding: "utf8", data: patch.text },
+        atlas: { name: b.atlasName, encoding: "utf8", data: b.atlasText },
+        textures: b.textureNames.map((name) => {
+          const bytes = b.textureBytesByName[name];
+          if (!bytes) throw new Error("贴图原始字节缺失：" + name);
+          return { name: name, encoding: "base64", data: toBase64(bytes) };
+        }),
+      };
+    } catch (e) {
+      setStatus("保存失败：" + e.message, "error");
+      notice("error", "保存失败：" + e.message);
+      return false;
+    }
+
+    const expected = lib.targetNames(b.index);
+    const shape = lib.checkSaveRequestShape(body, expected);
+    if (!shape.ok) {
+      const err = issuesToError(shape.issues, "保存请求自检失败：");
+      setStatus(err.message, "error");
+      notice("error", err.message);
+      return false;
+    }
+
+    state.saveBusy = true;
+    state.writeState = "saving";
+    syncAll();
+    setStatus("正在保存 → " + b.base + " …");
+
+    let response = null;
+    let networkError = null;
+    try {
+      response = await fetch("/api/save-bundle", {
+        method: "POST",
+        cache: "no-store",
+        headers: {
+          "Content-Type": "application/json; charset=utf-8",
+          "X-Spine-Editor": "save-bundle-v1",
+        },
+        body: JSON.stringify(body),
+      });
+    } catch (e) {
+      networkError = e;
+    }
+
+    let payload = null;
+    if (response) {
+      try {
+        payload = await response.json();
+      } catch (_) {
+        payload = null;
+      }
+    }
+    state.saveBusy = false;
+
+    if (networkError || !response) {
+      return enterUncertain("未确认保存结果；改动仍保留，请重新载入核对磁盘（" + ((networkError && networkError.message) || "网络中断") + "）");
+    }
+
+    if (!response.ok) {
+      const err = payload && payload.error ? payload.error : null;
+      if (!err) {
+        return enterUncertain("未确认保存结果（HTTP " + response.status + " 响应无法识别）；改动仍保留，请重新载入核对磁盘");
+      }
+      if (err.code === "ROLLBACK_FAILED") {
+        return enterUncertain(err.message || "保存失败且部分文件未能恢复，请先检查磁盘或重新载入");
+      }
+      state.writeState = "ready";
+      syncAll();
+      const extra = err.code === "WRITE_DISABLED" ? "（当前服务只读）" : "";
+      notice("error", "保存失败：" + err.message + extra);
+      setStatus("保存失败：" + err.message, "error");
+      return false;
+    }
+
+    const check = lib.checkSaveResponse(payload, expected);
+    if (!check.ok) {
+      return enterUncertain(
+        "未确认保存结果：保存响应目标集合不完整（" + issuesToError(check.issues, "").message + "）；请重新载入核对磁盘"
+      );
+    }
+
+    /* ---- 收到合法 200 且目标集合完整，才提交新基线（契约 §4.2.4） ---- */
+    /* b.index 在载入时即由 normalizedIndex 规范化，保存不改变它的字段；这里只刷新序列化字节。 */
+    b.indexBytes = textBytes(lib.serializeIndex(b.index));
+    b.modelText = patch.text;
+    b.modelBytes = textBytes(patch.text);
+    state.raw =
+      typeof structuredClone === "function" ? structuredClone(patch.patched) : JSON.parse(JSON.stringify(patch.patched));
+    alignBonesToSaved(patch.patched);
+    state.initial = snapshot();
     state.dirty = false;
-    syncFooter();
-    setStatus("已导出 JSON（补丁 " + changed.length + " 个字段）· 运行时 JSON，不能还原 .spine 工程");
-    notice("info", changed.length ? "已导出：" + changed.slice(0, 6).join("、") + (changed.length > 6 ? "…" : "") : "已导出：未改动任何骨骼字段");
-    window.__lastExport = raw;
-    return raw;
+    state.writeState = "ready";
+    syncAll();
+    framePose();
+    render();
+
+    const changed = check.value.changed;
+    const unchanged = check.value.unchanged;
+    const changedText = changed.length ? "写入 " + changed.join("、") : "无文件变化";
+    notice("info", "已保存到 " + b.base + "：" + changedText + "；未变化 " + unchanged.length + " 个文件");
+    setStatus("已保存 " + changed.length + " 个文件 / " + unchanged.length + " 个未变化 · " + b.base);
+    return true;
+  }
+
+  function saveAsZip() {
+    if (!canArchiveNow()) {
+      setStatus(archiveReason(), "warn");
+      return false;
+    }
+    const lib = window.SpineBundle;
+    const b = state.bundle;
+    state.zipBusy = true;
+    syncAll();
+    setStatus("正在生成 ZIP…");
+    try {
+      const patch = patchedModel();
+      const pkg = {
+        base: b.base,
+        indexBytes: textBytes(lib.serializeIndex(b.index)),
+        model: { name: b.modelName, bytes: textBytes(patch.text) },
+        atlas: { name: b.atlasName, bytes: b.atlasBytes },
+        textures: b.textureNames.map((name) => ({ name: name, bytes: b.textureBytesByName[name] })),
+      };
+      const plan = lib.planBundleArchive(pkg);
+      if (!plan.ok) {
+        const err = issuesToError(plan.issues, "另存失败：");
+        setStatus(err.message, "error");
+        notice("error", err.message);
+        return false;
+      }
+      const zip = lib.buildZipStore(plan.value.entries);
+      if (!zip.ok) {
+        const err = issuesToError(zip.issues, "另存失败：");
+        setStatus(err.message, "error");
+        notice("error", err.message);
+        return false;
+      }
+      downloadBlob(new Blob([zip.value], { type: "application/zip" }), plan.value.zipName);
+      notice("info", "已生成 ZIP 并发起下载：" + plan.value.zipName + "；当前文件尚未就地保存");
+      setStatus("已生成 ZIP：" + plan.value.zipName + "（" + zip.value.length + " 字节）");
+      return true;
+    } catch (e) {
+      const message = "另存失败：" + ((e && e.message) || e);
+      setStatus(message, "error");
+      notice("error", message);
+      return false;
+    } finally {
+      state.zipBusy = false;
+      syncAll();
+    }
   }
 
   /* ==========================================================================
-   * 15. 示例菜单
+   * 15. 菜单条（文件 / 编辑 / 视图 / 帮助）—— 契约 §4.1
+   *     单一数据源：菜单与行内控件都调用同一 setter，同步函数同时写 DOM 与 aria-checked
    * ====================================================================== */
-  function menuItem(opts) {
+  const menuRefs = Object.create(null);
+
+  function menuSep() {
+    return el("div", "menu-sep");
+  }
+
+  function menuTitle(text) {
+    return el("div", "menu-title", text);
+  }
+
+  function menuItem(key, opts) {
     const b = el("button", "menu-item");
     b.type = "button";
-    b.setAttribute("role", "menuitem");
-    b.appendChild(iconEl(opts.icon || "sample"));
-    const text = el("span");
-    text.appendChild(el("span", null, opts.label));
-    if (opts.note) text.appendChild(el("span", "menu-note", opts.note));
+    b.setAttribute("role", opts.check ? "menuitemcheckbox" : "menuitem");
+    if (opts.check) b.setAttribute("aria-checked", "false");
+    if (key) b.id = "mi-" + key;
+    b.appendChild(iconEl(opts.icon || "info"));
+    const text = el("span", "menu-text");
+    text.appendChild(el("span", "menu-label", opts.label));
+    if (opts.note !== undefined) text.appendChild(el("span", "menu-note", opts.note));
     b.appendChild(text);
-    if (opts.disabled) {
-      b.disabled = true;
-      b.title = opts.note || "不可用";
-    } else {
-      b.addEventListener("click", () => {
-        closeExampleMenu();
-        opts.onClick();
-      });
+    if (opts.kbd) {
+      const k = el("kbd", "menu-kbd");
+      k.textContent = opts.kbd;
+      b.appendChild(k);
     }
+    if (key) menuRefs[key] = { node: b, opts: opts };
+    b.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (b.disabled) return;
+      closeMenus();
+      if (opts.onClick) opts.onClick();
+    });
     return b;
   }
-  function buildExampleMenu() {
-    const menu = $("exampleMenu");
+
+  function menuSlider(key, opts) {
+    const wrap = el("div", "menu-field");
+    wrap.appendChild(el("span", "menu-field-label", opts.label));
+    const input = document.createElement("input");
+    input.type = "range";
+    input.min = String(opts.min == null ? 0 : opts.min);
+    input.max = String(opts.max == null ? 100 : opts.max);
+    input.step = String(opts.step == null ? 1 : opts.step);
+    input.setAttribute("aria-label", opts.label);
+    input.addEventListener("input", () => opts.onInput(Number(input.value)));
+    const val = el("span", "val mono", "");
+    wrap.appendChild(input);
+    wrap.appendChild(val);
+    menuRefs[key] = { node: input, val: val, opts: opts };
+    return wrap;
+  }
+
+  function buildFileMenu() {
+    const menu = $("menuFile");
     menu.textContent = "";
-    menu.appendChild(el("div", "menu-title", "真实角色"));
     menu.appendChild(
-      menuItem({
+      menuItem("load", {
+        label: "载入文件…",
+        icon: "open",
+        note: "选择一个 index.json；模型、图集和贴图由索引读取",
+        onClick: () => $("files").click(),
+      })
+    );
+    menu.appendChild(
+      menuItem("save", { label: "保存文件", icon: "save", kbd: MOD_LABEL + "+S", note: "", onClick: saveToDisk })
+    );
+    menu.appendChild(menuItem("saveAs", { label: "另存文件", icon: "layers", note: "", onClick: saveAsZip }));
+    menu.appendChild(menuSep());
+    menu.appendChild(menuTitle("示例"));
+    menu.appendChild(
+      menuItem("ex-main", {
         label: "deepseek 女仆",
-        note: "assets/characters/deepseek/spine · 11 部件 / 12 骨骼",
         icon: "sample",
+        note: "assets/characters/deepseek/spine · 经索引载入",
         onClick: loadExample,
       })
     );
-    menu.appendChild(el("div", "menu-sep"));
-    menu.appendChild(el("div", "menu-title", "测试样张（fixtures）"));
+    menu.appendChild(
+      menuItem("ex-legacy", {
+        label: "deepseek 旧版三视图",
+        icon: "sample",
+        note: "assets/characters/deepseek/spine/legacy-views · 经索引载入",
+        onClick: loadLegacyExample,
+      })
+    );
+    menu.appendChild(menuSep());
+    menu.appendChild(menuTitle("测试样张（fixtures）"));
     const cases = fixtureCases();
     if (cases) {
       const ids = Object.keys(cases).filter((id) => cases[id] && cases[id].example === true);
       const list = ids.length ? ids : Object.keys(cases);
-      const groupIcon = { basic: "mesh", atlas: "texture", ik: "target", fk: "bone", diagnostics: "alert", degenerate: "alert" };
+      const groupIcon = {
+        basic: "mesh",
+        atlas: "texture",
+        ik: "target",
+        fk: "bone",
+        diagnostics: "alert",
+        degenerate: "alert",
+      };
       for (const id of list) {
         const fx = cases[id];
         menu.appendChild(
-          menuItem({
+          menuItem("fx-" + id, {
             label: fx.label || id,
-            note: "fixtures/" + id + (fx.group ? " · " + fx.group : ""),
+            note: "fixtures/" + id + (fx.group ? " · " + fx.group : "") + "（只读样张）",
             icon: groupIcon[fx.group] || "mesh",
             onClick: () => loadFixture(id),
           })
@@ -2097,39 +2681,348 @@
       }
       if (list.length < Object.keys(cases).length) {
         menu.appendChild(
-          menuItem({
+          menuItem("fx-rest", {
             label: "其余 " + (Object.keys(cases).length - list.length) + " 个样张",
             note: "含退化/不支持特性用例：在 selftest.html 里跑断言",
             icon: "info",
             disabled: true,
+            onClick: () => {},
           })
         );
       }
     } else {
-      menu.appendChild(menuItem({ label: "fixtures 未就绪", note: "需要 fixtures/cases.js", icon: "mesh", disabled: true }));
+      menu.appendChild(menuItem("fx-none", { label: "fixtures 未就绪", note: "需要 fixtures/cases.js", icon: "mesh", disabled: true, onClick: () => {} }));
     }
-    menu.appendChild(el("div", "menu-sep"));
+    menu.appendChild(menuSep());
     const rig = new URLSearchParams(location.search).get("rig");
     menu.appendChild(
-      menuItem({
+      menuItem("rig-hint", {
         label: "开发用：?rig=<相对路径>",
-        note: rig ? "当前：" + rig : "地址栏追加 ?rig=references/spine-rigs/… 可载入真实 rig",
+        note: rig ? "当前：" + rig + "（只读，保存禁用）" : "地址栏追加 ?index=assets/…/index.json 可就地保存",
         icon: "target",
         disabled: true,
+        onClick: () => {},
       })
     );
   }
-  function openExampleMenu() {
-    $("exampleMenu").hidden = false;
-    $("btnExamples").setAttribute("aria-expanded", "true");
-    const first = $("exampleMenu").querySelector(".menu-item:not(:disabled)");
-    if (first) first.focus();
-  }
-  function closeExampleMenu() {
-    $("exampleMenu").hidden = true;
-    $("btnExamples").setAttribute("aria-expanded", "false");
+
+  function buildEditMenu() {
+    const menu = $("menuEdit");
+    menu.textContent = "";
+    menu.appendChild(
+      menuItem("toolMove", { label: "移动", icon: "move", kbd: "V", check: true, onClick: () => setTool("move") })
+    );
+    menu.appendChild(
+      menuItem("toolPan", { label: "平移", icon: "hand", kbd: "Space", check: true, onClick: () => setTool("pan") })
+    );
+    menu.appendChild(menuSep());
+    menu.appendChild(
+      menuItem("undo", { label: "撤销", icon: "undo", kbd: MOD_LABEL + "+Z", onClick: () => undo() })
+    );
+    menu.appendChild(
+      menuItem("reset", { label: "重置", icon: "reset", note: "回到最近保存状态", onClick: () => resetAll() })
+    );
   }
 
+  function buildViewMenu() {
+    const menu = $("menuView");
+    menu.textContent = "";
+    menu.appendChild(menuItem("fit", { label: "适配", icon: "fit", kbd: "F", onClick: () => fitView("all") }));
+    menu.appendChild(menuItem("zoomIn", { label: "放大", icon: "zoom-in", kbd: "+", onClick: () => zoomBy(1.25) }));
+    menu.appendChild(menuItem("zoomOut", { label: "缩小", icon: "zoom-out", kbd: "-", onClick: () => zoomBy(1 / 1.25) }));
+    menu.appendChild(menuItem("zoom100", { label: "实际大小", icon: "bounds", note: "100%", onClick: zoomReset }));
+    menu.appendChild(menuSep());
+    menu.appendChild(menuItem("panel", { label: "面板", icon: "panel", check: true, onClick: () => setPanelOpen(!panelVisible()) }));
+    menu.appendChild(menuSep());
+    menu.appendChild(menuTitle("显示层"));
+    const layers = [
+      ["texture", "贴图", "texture"],
+      ["bones", "骨骼", "bone"],
+      ["mesh", "网格", "mesh"],
+      ["weights", "权重", "weight"],
+    ];
+    for (const item of layers) {
+      menu.appendChild(
+        menuItem("layer-" + item[0], {
+          label: item[1],
+          icon: item[2],
+          check: true,
+          onClick: () => setLayer(item[0], !state.show[item[0]]),
+        })
+      );
+    }
+    menu.appendChild(menuSep());
+    menu.appendChild(menuItem("snap", { label: "吸附", icon: "magnet", check: true, onClick: () => setSnap(!state.snap) }));
+    menu.appendChild(menuTitle("权重配色"));
+    menu.appendChild(
+      menuItem("weightBone", { label: "按骨配色", icon: "weight", check: true, onClick: () => setWeightMode("bone") })
+    );
+    menu.appendChild(
+      menuItem("weightHeat", { label: "选中骨热力", icon: "weight", check: true, onClick: () => setWeightMode("heat") })
+    );
+    menu.appendChild(menuSep());
+    menu.appendChild(menuTitle("贴图强度"));
+    menu.appendChild(
+      menuSlider("texAlpha", {
+        label: "贴图强度",
+        min: 0,
+        max: 100,
+        step: 1,
+        onInput: (v) => setTexAlpha(v, { auto: false }),
+      })
+    );
+  }
+
+  function buildHelpMenu() {
+    const menu = $("menuHelp");
+    menu.textContent = "";
+    menu.appendChild(menuItem("help", { label: "帮助浮层", icon: "help", kbd: "?", onClick: () => openHelp() }));
+    menu.appendChild(
+      menuItem("shortcuts", { label: "快捷键", icon: "keyframe", note: "打开帮助并跳到键盘表", onClick: () => openHelp("keys") })
+    );
+  }
+
+  function buildMenus() {
+    buildFileMenu();
+    buildEditMenu();
+    buildViewMenu();
+    buildHelpMenu();
+  }
+
+  function syncMenuEntry(key, patch) {
+    const ref = menuRefs[key];
+    if (!ref || !ref.node) return;
+    const node = ref.node;
+    if (patch.disabled !== undefined) node.disabled = !!patch.disabled;
+    if (patch.checked !== undefined) node.setAttribute("aria-checked", patch.checked ? "true" : "false");
+    if (patch.note !== undefined) {
+      const note = node.querySelector(".menu-note");
+      if (note) note.textContent = patch.note;
+      // 只在禁用时用 title 解释原因；恢复可用后清掉，避免残留「载入中… / 正在生成 ZIP…」
+      if (node.disabled && patch.note) node.title = patch.note;
+      else node.removeAttribute("title");
+    }
+    if (patch.label !== undefined) {
+      const lab = node.querySelector(".menu-label");
+      if (lab) lab.textContent = patch.label;
+    }
+  }
+
+  function syncMenus() {
+    const loaded = !!state.model;
+    const busy = state.loading || state.saveBusy || state.zipBusy;
+    syncMenuEntry("load", { disabled: busy });
+    syncMenuEntry("save", { disabled: !canSaveNow(), note: saveReason() });
+    syncMenuEntry("saveAs", { disabled: !canArchiveNow(), note: archiveReason() });
+    syncMenuEntry("toolMove", { checked: state.tool === "move" });
+    syncMenuEntry("toolPan", { checked: state.tool === "pan" });
+    syncMenuEntry("undo", { disabled: !loaded || state.undo.length === 0 });
+    syncMenuEntry("reset", { disabled: !loaded });
+    syncMenuEntry("fit", { disabled: !loaded });
+    syncMenuEntry("zoomIn", { disabled: !loaded });
+    syncMenuEntry("zoomOut", { disabled: !loaded });
+    syncMenuEntry("zoom100", { disabled: !loaded });
+    syncMenuEntry("panel", { checked: panelVisible() });
+    for (const name of ["texture", "bones", "mesh", "weights"]) {
+      syncMenuEntry("layer-" + name, { checked: !!state.show[name] });
+    }
+    syncMenuEntry("snap", { checked: !!state.snap });
+    syncMenuEntry("weightBone", { checked: state.weightMode !== "heat" });
+    syncMenuEntry("weightHeat", { checked: state.weightMode === "heat" });
+    const tex = menuRefs.texAlpha;
+    if (tex && tex.node) {
+      tex.node.value = String(state.texAlpha);
+      tex.node.disabled = false;
+      tex.val.textContent = Math.round(state.texAlpha) + "%";
+    }
+    const fileBtn = $("btnMenuFile");
+    if (fileBtn) fileBtn.setAttribute("aria-busy", busy ? "true" : "false");
+  }
+
+  function anyMenuOpen() {
+    return $$(".menubar .menu").some((m) => !m.hidden);
+  }
+
+  function closeMenus() {
+    for (const wrap of $$(".menubar .menu-wrap")) {
+      const menu = wrap.querySelector(".menu");
+      const btn = wrap.querySelector(".menubtn");
+      if (menu && !menu.hidden) {
+        menu.hidden = true;
+        menu.style.left = "";
+        menu.style.right = "";
+      }
+      if (btn) btn.setAttribute("aria-expanded", "false");
+    }
+  }
+
+  function menuFocusables(menu) {
+    return $$(".menu-item:not(:disabled)", menu);
+  }
+
+  function focusMenuItem(menu, index) {
+    const items = menuFocusables(menu);
+    if (!items.length) return;
+    const i = Math.max(0, Math.min(items.length - 1, index));
+    items[i].focus();
+  }
+
+  /** 视口右边缘翻转：靠右的菜单改为右对齐，避免被裁切 */
+  function positionMenu(wrap) {
+    const menu = wrap.querySelector(".menu");
+    if (!menu || menu.hidden) return;
+    menu.style.left = "";
+    menu.style.right = "";
+    const rect = menu.getBoundingClientRect();
+    if (rect.right > window.innerWidth - 8) {
+      menu.style.left = "auto";
+      menu.style.right = "0px";
+    }
+  }
+
+  function openMenu(wrap) {
+    closeMenus();
+    const menu = wrap.querySelector(".menu");
+    const btn = wrap.querySelector(".menubtn");
+    if (!menu || !btn) return;
+    menu.hidden = false;
+    btn.setAttribute("aria-expanded", "true");
+    positionMenu(wrap);
+  }
+
+  function bindMenus() {
+    for (const wrap of $$(".menubar .menu-wrap")) {
+      const btn = wrap.querySelector(".menubtn");
+      const menu = wrap.querySelector(".menu");
+      if (!btn || !menu) continue;
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (menu.hidden) openMenu(wrap);
+        else closeMenus();
+      });
+      btn.addEventListener("keydown", (e) => {
+        if (e.key === "ArrowDown" || e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          openMenu(wrap);
+          focusMenuItem(menu, 0);
+        } else if (e.key === "ArrowUp") {
+          e.preventDefault();
+          openMenu(wrap);
+          const items = menuFocusables(menu);
+          focusMenuItem(menu, items.length - 1);
+        }
+      });
+      btn.addEventListener("mouseenter", () => {
+        if (anyMenuOpen() && menu.hidden) openMenu(wrap);
+      });
+      menu.addEventListener("click", (e) => e.stopPropagation());
+      menu.addEventListener("keydown", (e) => {
+        const items = menuFocusables(menu);
+        const at = items.indexOf(document.activeElement);
+        if (e.key === "Escape") {
+          e.preventDefault();
+          e.stopPropagation();
+          closeMenus();
+          btn.focus();
+          return;
+        }
+        if (e.key === "Tab") {
+          closeMenus();
+          return;
+        }
+        if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+          e.preventDefault();
+          const dir = e.key === "ArrowDown" ? 1 : -1;
+          const next = items.length ? (at < 0 ? 0 : (at + dir + items.length) % items.length) : 0;
+          focusMenuItem(menu, next);
+          return;
+        }
+        if (e.key === "Home") {
+          e.preventDefault();
+          focusMenuItem(menu, 0);
+          return;
+        }
+        if (e.key === "End") {
+          e.preventDefault();
+          focusMenuItem(menu, items.length - 1);
+        }
+      });
+    }
+    document.addEventListener("click", (e) => {
+      if (!e.target || !e.target.closest || !e.target.closest(".menu-wrap")) closeMenus();
+    });
+    window.addEventListener("resize", () => {
+      for (const wrap of $$(".menubar .menu-wrap")) positionMenu(wrap);
+    });
+  }
+
+  /* --- 视图/显示层单一数据源 setter（行内控件与菜单共用） ------------------ */
+
+  function zoomReset() {
+    if (!state.model) return;
+    const b = state.frame ? core.boundsOf(state.frame.geo) : null;
+    state.zoom = 1;
+    if (b) {
+      state.panX = -((b.minX + b.maxX) / 2);
+      state.panY = -((b.minY + b.maxY) / 2);
+    }
+    syncZoom();
+    render();
+  }
+
+  function setLayer(name, on) {
+    if (!(name in state.show)) return;
+    state.show[name] = !!on;
+    autoTextureAlpha();
+    syncLayers();
+    syncStageOverlays();
+    syncDebug();
+    render();
+    if (!anyLayerOn()) setStatus("四个显示层都关了：画布暂不响应拾取，列表与检查器仍可用", "warn");
+  }
+
+  function setSnap(on) {
+    state.snap = !!on;
+    syncLayers();
+    setStatus(state.snap ? "吸附已开启：拖动取整到 1 个单位" : "吸附已关闭");
+  }
+
+  function setTexAlpha(v, opts) {
+    const n = Number(v);
+    state.texAlpha = clamp(Number.isFinite(n) ? n : 0, 0, 100);
+    if (opts && opts.auto === false) state.texAlphaAuto = false;
+    syncLayers();
+    render();
+  }
+
+  function setWeightMode(mode) {
+    state.weightMode = mode === "heat" ? "heat" : "bone";
+    syncLayers();
+    render();
+    syncDebug();
+  }
+
+  const isNarrow = () => !!(window.matchMedia && window.matchMedia("(max-width: 959px)").matches);
+
+  function panelVisible() {
+    if (isNarrow()) return document.body.classList.contains("drawer-open");
+    return !document.body.classList.contains("panel-hidden");
+  }
+
+  function syncPanel() {
+    const btn = $("btnPanel");
+    if (!btn) return;
+    const open = panelVisible();
+    btn.setAttribute("aria-pressed", open ? "true" : "false");
+    btn.classList.toggle("on", open);
+  }
+
+  function setPanelOpen(open) {
+    if (isNarrow()) document.body.classList.toggle("drawer-open", !!open);
+    else document.body.classList.toggle("panel-hidden", !open);
+    syncPanel();
+    if (state.model) render();
+  }
   /* ==========================================================================
    * 16. 绑定 / 启动
    * ====================================================================== */
@@ -2164,47 +3057,23 @@
     }
   }
   function bindUI() {
-    $("btnLoad").addEventListener("click", () => $("files").click());
     $("btnEmptyLoad").addEventListener("click", () => $("files").click());
     $("files").addEventListener("change", (e) => {
       loadFiles(e.target.files);
       e.target.value = "";
     });
     $("btnEmptyExample").addEventListener("click", loadExample);
-    $("btnExamples").addEventListener("click", (e) => {
-      e.stopPropagation();
-      if ($("exampleMenu").hidden) openExampleMenu();
-      else closeExampleMenu();
-    });
-    document.addEventListener("click", (e) => {
-      if (!$("exampleMenu").hidden && !e.target.closest(".menu-wrap")) closeExampleMenu();
-    });
-    document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" && !$("exampleMenu").hidden) closeExampleMenu();
-    });
-    $("btnToolMove").addEventListener("click", () => setTool("move"));
-    $("btnToolPan").addEventListener("click", () => setTool("pan"));
-    $("btnUndo").addEventListener("click", undo);
-    $("btnReset").addEventListener("click", resetAll);
-    $("btnSave").addEventListener("click", exportJson);
     $("btnFit").addEventListener("click", () => fitView("all"));
     $("btnZoomIn").addEventListener("click", () => zoomBy(1.25));
     $("btnZoomOut").addEventListener("click", () => zoomBy(1 / 1.25));
-    $("btnHelp").addEventListener("click", toggleHelp);
+    $("btnPanel").addEventListener("click", () => setPanelOpen(!panelVisible()));
     $("helpClose").addEventListener("click", closeHelp);
     $("helpOverlay").addEventListener("click", (e) => {
       if (e.target === $("helpOverlay")) closeHelp();
     });
-    $("btnPanel").addEventListener("click", () => {
-      const open = document.body.classList.toggle("drawer-open");
-      $("btnPanel").setAttribute("aria-pressed", open ? "true" : "false");
-    });
     const backdrop = $("backdrop");
     if (backdrop) {
-      backdrop.addEventListener("click", () => {
-        document.body.classList.remove("drawer-open");
-        $("btnPanel").setAttribute("aria-pressed", "false");
-      });
+      backdrop.addEventListener("click", () => setPanelOpen(false));
     }
     $("btnRestoreAll").addEventListener("click", () => {
       state.hidden.clear();
@@ -2214,38 +3083,15 @@
       render();
     });
     $("btnRestoreTexture").addEventListener("click", () => {
-      state.show.texture = true;
-      syncLayers();
-      syncStageOverlays();
-      render();
+      setLayer("texture", true);
       setStatus("已恢复贴图层");
     });
     $$(".layers input[data-layer]").forEach((cb) => {
-      cb.addEventListener("change", () => {
-        state.show[cb.dataset.layer] = cb.checked;
-        autoTextureAlpha();
-        syncStageOverlays();
-        syncDebug();
-        render();
-        if (!anyLayerOn()) setStatus("四个显示层都关了：画布暂不响应拾取，列表与检查器仍可用", "warn");
-      });
+      cb.addEventListener("change", () => setLayer(cb.dataset.layer, cb.checked));
     });
-    $("snapChk").addEventListener("change", (e) => {
-      state.snap = e.target.checked;
-      syncLayers();
-      setStatus(state.snap ? "吸附已开启：拖动取整到 1 个单位" : "吸附已关闭");
-    });
-    $("texAlpha").addEventListener("input", (e) => {
-      state.texAlpha = Number(e.target.value);
-      state.texAlphaAuto = false;
-      $("texAlphaV").textContent = Math.round(state.texAlpha) + "%";
-      render();
-    });
-    $("weightMode").addEventListener("change", (e) => {
-      state.weightMode = e.target.value;
-      render();
-      syncDebug();
-    });
+    $("snapChk").addEventListener("change", (e) => setSnap(e.target.checked));
+    $("texAlpha").addEventListener("input", (e) => setTexAlpha(e.target.value, { auto: false }));
+    $("weightMode").addEventListener("change", (e) => setWeightMode(e.target.value));
     $("btnSelVisible").addEventListener("click", () => toggleHidden(state.sel));
     $("btnSelLock").addEventListener("click", () => toggleLocked(state.sel));
     $("btnLayerUp").addEventListener("click", () => moveLayer("up"));
@@ -2319,8 +3165,13 @@
       state.spaceDown = false;
       updateCursor();
     });
+    window.addEventListener("resize", () => {
+      syncPanel();
+      render();
+    });
     if (typeof ResizeObserver === "function") new ResizeObserver(() => render()).observe(stage);
   }
+
   function autoTextureAlpha() {
     if (!state.texAlphaAuto) return;
     state.texAlpha = overlayActive() ? 35 : 100;
@@ -2336,20 +3187,53 @@
       if (out) out.textContent = p[2];
     }
   }
+  async function probeCapabilities() {
+    state.writeState = "checking";
+    syncAll();
+    let cap = null;
+    try {
+      const res = await fetch("/api/capabilities", { cache: "no-store" });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const body = await res.json();
+      if (!body || body.apiVersion !== 1 || body.saveBundle !== true) throw new Error("能力响应不匹配");
+      cap = body;
+    } catch (_) {
+      cap = null;
+    }
+    state.cap = cap;
+    state.writeState = cap ? "ready" : "readonly";
+    syncAll();
+    if (!cap) {
+      setStatus("当前服务只读：可载入与另存 ZIP；用启动脚本（serve.py）可就地保存", "warn");
+    }
+    return !!cap;
+  }
+
   function init() {
     bindUI();
+    bindMenus();
     if ($("kbdUndo")) $("kbdUndo").textContent = MOD_LABEL + "+Z";
     if ($("helpModKey")) $("helpModKey").textContent = MOD_LABEL;
-    buildExampleMenu();
+    if ($("helpModSave")) $("helpModSave").textContent = MOD_LABEL;
+    buildMenus();
+    syncPanel();
     syncAll();
     syncExprInputs();
     updateTimeLabel();
     syncFooter();
-    setStatus("未载入：选择 JSON + atlas + 所有图集图片，或从「示例」开始");
+    setStatus("未载入：选择一个 index.json，或从「文件 → 示例」开始");
     render();
-    const rig = new URLSearchParams(location.search).get("rig");
-    if (rig) loadRig(rig);
-    window.__spineEditor = {
+    probeCapabilities();
+    const params = new URLSearchParams(location.search);
+    const indexParam = params.get("index");
+    const rigParam = params.get("rig");
+    if (indexParam) {
+      if (rigParam) notice("warn", "同时给了 ?index= 与 ?rig=：优先使用 index，rig 参数已忽略");
+      loadIndexByPath(indexParam, "url");
+    } else if (rigParam) {
+      loadRig(rigParam);
+    }
+    window.__characterEditor = {
       state: state,
       core: coreInfo,
       frame: () => state.frame,
@@ -2358,9 +3242,19 @@
       render: render,
       fitView: fitView,
       loadRig: loadRig,
-      exportJson: exportJson,
+      loadIndex: loadIndexByPath,
+      loadExample: loadExample,
+      loadFixture: loadFixture,
+      saveToDisk: saveToDisk,
+      saveAsZip: saveAsZip,
+      probeCapabilities: probeCapabilities,
+      bundle: () => state.bundle,
+      saveReason: saveReason,
+      archiveReason: archiveReason,
+      patchedModel: patchedModel,
     };
   }
+
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
   else init();
 })();

@@ -1,7 +1,8 @@
 /* =============================================================================
-   Spine 快速摆位与调试 · 布局与设计令牌
+   内置人物包管理器 · 布局与设计令牌
    令牌来源：docs/review/2026-11-01-spine/contract-task1.md B4（不要在此之外发明颜色/间距）
-   结构：顶部两行工具条 + 显示层栏 + 画布 + 320px 右栏（部件列表/检查器/调试/状态脚注）
+   结构（自上而下）：菜单条 38px → 视图/显示层条 34px → 画布 + 320px 右栏
+                     → 动画条（整行）→ 状态栏 26px
    窄屏 <960px：右栏变抽屉（body.drawer-open 控制）
    ============================================================================= */
 
@@ -111,6 +112,89 @@ ul, li { list-style: none; }
   padding: 5px var(--space-3);
 }
 .bar + .bar { border-top: 1px solid var(--line); }
+
+/* 菜单条：38px，深色扁平，弱化边框 */
+.menubar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 38px;
+  padding: 0 var(--space-2);
+  border-bottom: 1px solid var(--line);
+  min-width: 0;
+}
+.menubar .spacer { flex: 1 1 auto; }
+.menubar .app-title {
+  padding-right: var(--space-2);
+  color: var(--fg);
+  font-size: var(--text-md);
+  font-weight: 600;
+  letter-spacing: .02em;
+  white-space: nowrap;
+}
+.menubtn {
+  display: inline-flex;
+  align-items: center;
+  height: 26px;
+  padding: 0 10px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--dim);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+.menubtn:hover { background: var(--surface-hover); color: var(--fg); }
+.menubtn[aria-expanded='true'] {
+  background: var(--surface-hover);
+  border-color: var(--line);
+  color: var(--fg);
+}
+.menubtn:focus-visible { border-color: var(--accent); box-shadow: var(--ring); }
+
+/* 视图 / 显示层条：34px 一行 */
+.bar-view {
+  min-height: 34px;
+  padding: 3px var(--space-2);
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.bar-view .btn { padding: 0 8px; }
+.bar-view .layer { padding: 0 7px; }
+.bar-view .alpha input[type='range'] { width: 76px; }
+.bar-view .zoomgrp .zoom-val { min-width: 40px; }
+.vsep {
+  width: 1px;
+  height: 18px;
+  background: var(--line);
+  flex: none;
+  margin: 0 var(--space-1);
+}
+.zoomgrp {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.zoomgrp .btn { border-color: transparent; background: transparent; }
+.zoomgrp .btn:hover:not(:disabled) { background: var(--surface-hover); }
+.zoomgrp .zoom-val { min-width: 46px; text-align: center; font-size: var(--text-xs); }
+
+/* 动画条：整行，位于状态栏上方 */
+.bar-anim {
+  flex: 0 0 auto;
+  min-height: 34px;
+  padding: 3px var(--space-3);
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+  position: relative;
+  z-index: var(--z-toolbar);
+}
 
 .grp { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .grp + .grp { margin-left: var(--space-1); }
@@ -360,6 +444,60 @@ input[type='checkbox']:disabled { cursor: not-allowed; }
   line-height: 1.35;
 }
 .menu-sep { height: 1px; margin: var(--space-1) 4px; background: var(--line); }
+
+/* 菜单条弹层：视口高度约束 + 内部滚动，边缘翻转由 JS 处理 */
+.menubar .menu {
+  max-height: min(76vh, 560px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.menu-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.menu-label { line-height: 1.35; }
+.menu-item kbd.menu-kbd {
+  flex: none;
+  margin-left: var(--space-2);
+  background: transparent;
+  border-color: transparent;
+  color: var(--dim);
+}
+.menu-item[aria-checked='true'] { background: var(--selected); }
+.menu-item[aria-checked='true']::after {
+  content: '';
+  flex: none;
+  width: 10px;
+  height: 6px;
+  margin-left: var(--space-2);
+  border-left: 1.6px solid var(--accent);
+  border-bottom: 1.6px solid var(--accent);
+  transform: rotate(-45deg) translateY(-2px);
+}
+.menu-item:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.menu-field {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 6px 8px;
+  color: var(--dim);
+  font-size: var(--text-xs);
+}
+.menu-field-label { flex: none; }
+.menu-field input[type='range'] { flex: 1 1 auto; min-width: 88px; }
+.menu-field .val {
+  flex: none;
+  width: 38px;
+  text-align: right;
+  color: var(--fg);
+  font-family: var(--font-mono);
+}
 
 /* 时间轴行 */
 .timeline { flex: 1 1 240px; min-width: 140px; }
@@ -958,6 +1096,11 @@ main {
   white-space: nowrap;
 }
 .help-table td:last-child { color: var(--dim); }
+.help-block.is-target {
+  outline: 1px solid var(--accent);
+  outline-offset: 4px;
+  border-radius: var(--radius-sm);
+}
 .help-note {
   margin-top: var(--space-3);
   padding-top: var(--space-2);
@@ -967,12 +1110,12 @@ main {
   line-height: 1.55;
 }
 
-/* 抽屉（<960px） */
-.panel-toggle { display: none; }
+/* 面板：宽屏用 body.panel-hidden 收起右栏；<960px 右栏变抽屉 */
 .backdrop { display: none; }
+body.panel-hidden .inspector { display: none; }
 
 @media (max-width: 959px) {
-  .panel-toggle { display: inline-flex; }
+  body.panel-hidden .inspector { display: flex; }
   .inspector {
     position: fixed;
     top: 0;
@@ -997,8 +1140,26 @@ main {
     transition: opacity .18s ease;
   }
   body.drawer-open .backdrop { opacity: 1; pointer-events: auto; }
-  .bar { padding: 5px var(--space-2); }
+  .bar { padding: 3px var(--space-2); }
+  .bar-view { gap: 6px; }
   .statusbar .hint { display: none; }
+  .menubar { padding: 0 var(--space-2); gap: 0; }
+  .menubtn { padding: 0 8px; }
+  .menubar .app-title { font-size: var(--text-sm); }
+}
+
+/* 极窄屏：单个逻辑组可横向滚动，页面本身不横向溢出 */
+@media (max-width: 719px) {
+  .bar-view { overflow-x: auto; flex-wrap: nowrap; }
+  .bar-view > .grp,
+  .bar-view > .layers,
+  .bar-view > .toggle,
+  .bar-view > .pick,
+  .bar-view > .alpha,
+  .bar-view > .zoomgrp { flex: none; }
+  .bar-anim { flex-wrap: wrap; }
+  .bar-anim .timeline { flex: 1 1 100%; min-width: 0; }
+  .menubar .app-title { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1030,9 +1191,9 @@ main {
 .pick select {
   height: 24px;
   padding: 0 4px;
-  background: var(--surface-2);
+  background: var(--surface);
   color: var(--fg);
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   font-size: var(--text-xs);
 }
