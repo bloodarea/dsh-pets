@@ -14,6 +14,7 @@
 """
 import argparse
 import json
+import math
 import os
 
 import numpy as np
@@ -47,6 +48,56 @@ def key_white(rgb):
     return rgb, np.where(bg, 0, 255).astype(np.uint8)
 
 
+TOP_BAND = 0.15       # 只在头顶 15% 清理闭合页白（呆毛环）
+BIG_POCKET = 5000     # 只删大块闭合页白
+PINHOLE = 600         # 小于该面积的透明碎洞从周围补回
+
+
+def clean_top_pockets(rgb, alpha):
+    """清掉头顶呆毛环里被包住的页白（模型通常不理会这个要求，只能本地补）。"""
+    h, w = alpha.shape
+    white = (alpha > 200) & (rgb.min(axis=2) >= 235)
+    lab, n = ndimage.label(white)
+    if not n:
+        return alpha
+    border = set(lab[0, :]) | set(lab[-1, :]) | set(lab[:, 0]) | set(lab[:, -1])
+    border.discard(0)
+    out = alpha.copy()
+    lim = int(h * TOP_BAND)
+    for i in range(1, n + 1):
+        if i in border:
+            continue
+        m = lab == i
+        if int(m.sum()) < BIG_POCKET:
+            continue
+        if np.where(m)[0].mean() >= lim:
+            continue
+        mean = rgb[m].mean(axis=0)
+        if abs(float(mean[0]) - float(mean[2])) < 2.0 and abs(float(mean[0]) - float(mean[1])) < 2.5:
+            out[m] = 0
+    return out
+
+
+def fill_pinholes(rgb, alpha):
+    trans = alpha <= 8
+    lab, n = ndimage.label(trans)
+    if not n:
+        return rgb, alpha
+    border = set(lab[0, :]) | set(lab[-1, :]) | set(lab[:, 0]) | set(lab[:, -1])
+    border.discard(0)
+    out_a = alpha.copy()
+    _, (iy, ix) = ndimage.distance_transform_edt(trans, return_indices=True)
+    for i in range(1, n + 1):
+        if i in border:
+            continue
+        m = lab == i
+        if int(m.sum()) >= PINHOLE:
+            continue
+        rgb[m] = rgb[iy[m], ix[m]]
+        out_a[m] = 255
+    return rgb, out_a
+
+
 def cut_parts(rgb, alpha, min_area):
     subj = alpha > 128
     lab, n = ndimage.label(subj)
@@ -68,7 +119,7 @@ def cut_parts(rgb, alpha, min_area):
 
 
 def build_skeleton(name, placements, canvas_w, canvas_h):
-    """placements: [{name,w,h,cx,cy}]，cx/cy 为画布坐标（y 向下），脚底为 y=下边界。"""
+    """placements: [{name,w,h,cx,cy}]，cx/cy 为画布坐标（y 向下）。"""
     feet_y = max(p["cy"] + p["h"] / 2 for p in placements)
     bones = [{"name": "root"}]
     slots, att_by_slot = [], {}
@@ -84,29 +135,64 @@ def build_skeleton(name, placements, canvas_w, canvas_h):
             p["name"]: {"x": 0, "y": 0, "width": p["w"], "height": p["h"]}
         }
 
-    def k(t, **kw):
-        d = {"time": round(t, 3)}
-        d.update(kw)
-        return d
+    present = {p["name"] for p in placements}
 
-    # 整身动画挂在 root 上；有 head 部件时额外给头部一点偏移
-    anims = {
-        "idle": {"bones": {"root": {
-            "scaleY": [k(0, value=1), k(1.0, value=1.015), k(2.0, value=1)],
-            "rotate": [k(0, value=0), k(1.0, value=0.6), k(2.0, value=0)]}}},
-        "working": {"bones": {"root": {
-            "translate": [k(0, y=0), k(0.25, y=8), k(0.5, y=0), k(0.75, y=8), k(1.0, y=0)],
-            "rotate": [k(0, value=1.5), k(0.5, value=-1.5), k(1.0, value=1.5)]}}},
-        "attention": {"bones": {"root": {
-            "scaleX": [k(0, value=1), k(0.12, value=1.04), k(0.24, value=1), k(0.36, value=1.04), k(0.5, value=1)],
-            "rotate": [k(0, value=0), k(0.08, value=3), k(0.16, value=-3), k(0.24, value=2), k(0.5, value=0)]}}},
-        "done": {"bones": {"root": {
-            "translate": [k(0, y=0), k(0.15, y=-10), k(0.35, y=60), k(0.6, y=0), k(1.0, y=0)],
-            "scaleY": [k(0, value=1), k(0.15, value=0.92), k(0.35, value=1.06), k(1.0, value=1)]}}},
-        "failed": {"bones": {"root": {
-            "rotate": [k(0, value=0), k(0.4, value=-3), k(3.0, value=-3)],
-            "translate": [k(0, y=0), k(0.4, y=-10), k(3.0, y=-10)]}}},
+    def keys(dur, fn, n=9):
+        return [{"time": round(i * dur / (n - 1), 3), "value": round(fn(i / (n - 1)), 3)}
+                for i in range(n)]
+
+    def sine(amp, phase=0.0, cycles=1.0):
+        return lambda t: amp * math.sin(2 * math.pi * (t * cycles + phase))
+
+    # 每个状态：整体节奏 + 各部件幅度（度 / 像素）
+    STATES = {
+        "idle":      dict(dur=2.4, bob=6,  body=0.9, ahoge=7,  tail=5,  arm=3,  head=1.5, hair=2.0),
+        "working":   dict(dur=1.2, bob=16, body=2.0, ahoge=13, tail=11, arm=9,  head=3.0, hair=4.0),
+        "attention": dict(dur=0.9, bob=10, body=3.0, ahoge=18, tail=14, arm=14, head=5.0, hair=6.0),
+        "done":      dict(dur=1.2, bob=22, body=2.5, ahoge=16, tail=16, arm=16, head=4.0, hair=5.0),
+        "failed":    dict(dur=3.0, bob=3,  body=1.0, ahoge=4,  tail=3,  arm=2,  head=2.0, hair=1.0),
     }
+    # 相位错开，避免所有部件同步摆动（那样像纸片整体抖）
+    PHASE = {"ahoge": 0.12, "tail": 0.25, "arm-l": 0.0, "arm-r": 0.5,
+             "hair-back": 0.33, "hair-side": 0.42, "head": 0.08, "bow": 0.2}
+
+    anims = {}
+    for state, cfg in STATES.items():
+        dur = cfg["dur"]
+        bones_anim = {}
+        if "body" in present:
+            bones_anim[f"b_body"] = {
+                "translate": [{"time": 0, "x": 0, "y": 0},
+                              {"time": round(dur / 4, 3), "x": 0, "y": round(cfg["bob"] * 0.5, 2)},
+                              {"time": round(dur / 2, 3), "x": 0, "y": 0},
+                              {"time": round(dur * 3 / 4, 3), "x": 0, "y": round(cfg["bob"] * 0.5, 2)},
+                              {"time": dur, "x": 0, "y": 0}],
+                "rotate": keys(dur, sine(cfg["body"])),
+            }
+        for part, amp_key in (("ahoge", "ahoge"), ("tail", "tail"), ("head", "head"),
+                              ("hair-back", "hair"), ("hair-side", "hair"), ("bow", "head")):
+            if part not in present:
+                continue
+            amp = cfg[amp_key] * (1.6 if part == "ahoge" else 1.0)
+            ph = PHASE.get(part, 0)
+            bones_anim[f"b_{part}"] = {"rotate": keys(dur, sine(amp, ph, cycles=1.0))}
+        for arm in ("arm-l", "arm-r"):
+            if arm not in present:
+                continue
+            ph = PHASE.get(arm, 0)
+            bones_anim[f"b_{arm}"] = {"rotate": keys(dur, sine(cfg["arm"], ph, cycles=2.0))}
+        if "failed" == state and "head" in present:
+            bones_anim[f"b_head"] = {"rotate": [{"time": 0, "value": 0},
+                                                {"time": 0.4, "value": -8},
+                                                {"time": dur, "value": -8}]}
+        anims[state] = {"bones": bones_anim}
+    if "ahoge" in present and "tail" in present:
+        anims["turn"] = {
+            "slots": {},
+            "bones": {f"b_{p}": {"rotate": keys(0.6, sine(10 if p == "ahoge" else 8, 0, 2))}
+                      for p in ("ahoge", "tail") if p in present},
+        }
+
     return {
         "skeleton": {"spine": "4.2.00", "x": -canvas_w / 2, "y": -20,
                      "width": canvas_w, "height": canvas_h + 40},
@@ -136,6 +222,9 @@ def main():
     rgb = np.array(src)
     canvas_w, canvas_h = src.size
     rgb2, alpha = (key_green if a.key == "green" else key_white)(rgb)
+    if a.key == "green":
+        alpha = clean_top_pockets(rgb2, alpha)
+        rgb2, alpha = fill_pinholes(rgb2, alpha)
     parts = cut_parts(rgb2, alpha, int(canvas_w * canvas_h * a.min_area_ratio))
     print(f"输入 {canvas_w}x{canvas_h}，切出 {len(parts)} 个部件")
     if not parts:
