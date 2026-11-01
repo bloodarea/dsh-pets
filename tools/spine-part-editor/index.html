@@ -60,12 +60,15 @@
   button .ic{width:13px;height:13px;margin-right:3px}
   .item .mv button .ic,.item .eye .ic{margin:0;width:12.5px;height:12.5px}
   label .ic{width:13px;height:13px;margin-right:2px;stroke:var(--dim)}
-  /* 模式切换 */
-  .modes{display:flex;gap:2px;background:#11141c;border:1px solid var(--line);border-radius:6px;padding:2px}
-  .modes button{border:0;background:transparent;padding:3px 9px;border-radius:4px;color:var(--dim)}
-  .modes button:hover:not(:disabled){background:#1d2432;color:var(--fg)}
-  .modes button.on{background:#1f4f86;color:#fff}
-  .modes button.on .ic{stroke:#fff}
+  /* 显示层开关（可叠加） */
+  .layers{display:flex;gap:2px;background:#11141c;border:1px solid var(--line);border-radius:6px;padding:2px}
+  .layers label{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:4px;
+                cursor:pointer;color:var(--dim);user-select:none;white-space:nowrap}
+  .layers label:hover{background:#1d2432;color:var(--fg)}
+  .layers label:has(input:checked){background:#1f4f86;color:#fff}
+  .layers label:has(input:checked) .ic{stroke:#fff}
+  .layers input{margin:0;accent-color:#5aa9ff;width:12px;height:12px}
+  .layers .sep{width:1px;background:var(--line);margin:3px 4px;align-self:stretch}
   /* 侧栏面板 */
   .panel{padding:8px 10px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:6px;font-size:12px}
   .panel .ttl{color:var(--dim);font-size:11px;letter-spacing:.06em;text-transform:uppercase}
@@ -88,12 +91,13 @@
     <input id="files" type="file" multiple accept=".json,.atlas,.png,.webp" hidden>
   </div>
   <div class="grp">
-    <div class="modes" id="modeBar">
-      <button data-mode="texture" class="on"><svg class="ic"><use href="#i-texture"></use></svg>贴图</button>
-      <button data-mode="bones"><svg class="ic"><use href="#i-bone"></use></svg>骨骼</button>
-      <button data-mode="weights"><svg class="ic"><use href="#i-weight"></use></svg>权重</button>
-      <button data-mode="expr"><svg class="ic"><use href="#i-face"></use></svg>表情</button>
-      <button data-mode="mesh"><svg class="ic"><use href="#i-mesh"></use></svg>网格</button>
+    <div class="layers" id="layerBar">
+      <label title="显示角色贴图；只有勾选它才能拖动部件"><input type="checkbox" data-layer="texture" checked><svg class="ic"><use href="#i-texture"></use></svg>贴图</label>
+      <label title="显示骨骼与 FK/IK"><input type="checkbox" data-layer="bones"><svg class="ic"><use href="#i-bone"></use></svg>骨骼</label>
+      <label title="显示权重归属"><input type="checkbox" data-layer="weights"><svg class="ic"><use href="#i-weight"></use></svg>权重</label>
+      <label title="显示网格与 UV"><input type="checkbox" data-layer="mesh"><svg class="ic"><use href="#i-mesh"></use></svg>网格</label>
+      <span class="sep"></span>
+      <label title="表情参数面板"><input type="checkbox" data-layer="expr"><svg class="ic"><use href="#i-face"></use></svg>表情</label>
     </div>
   </div>
   <div class="grp">
@@ -187,7 +191,8 @@ const state = {
   sel: -1, zoom: 0.5, panX: 0, panY: 0,
   dirty: false, undo: [], hidden: new Set(),
   anim: "", animDur: 0, t: 0, playing: false, speed: 1, loop: true, lastTs: 0,
-  mode: "texture", expr: { blink: 0, mouth: 0, brow: 0 },
+  show: { texture: true, bones: false, weights: false, mesh: false, expr: false },
+  expr: { blink: 0, mouth: 0, brow: 0 },
 };
 
 /* ---------------- atlas ---------------- */
@@ -256,7 +261,7 @@ function applyLoaded(skel, regions, page, label) {
   ["btnSave", "btnReset", "showBounds", "showPivot"].forEach(id => $(id).disabled = false);
   setStatus(`已载入 ${state.slots.length} 部件 / ${names.length} 动画 · ${label}`);
   fitView(); renderList(); syncInputs(); updateTimeLabel();
-  if (state.mode !== "texture") refreshModePanels();
+  refreshModePanels();
   render();
 }
 
@@ -304,7 +309,7 @@ function boneWorld(name, anim, t, cache) {
     sx *= sampleField(ab.scale, t, "x", 1);
     sy *= sampleField(ab.scale, t, "y", 1);
   }
-  if (state.mode === "expr" && /head/i.test(name) && !exprGroups().eye.length) {
+  if (state.show.expr && /head/i.test(name) && !exprGroups().eye.length) {
     sy *= (1 - 0.05 * (state.expr.blink || 0));   // 无眼层时的兜底"眯眼"形变
   }
   const rad = rot * Math.PI / 180, cos = Math.cos(rad), sin = Math.sin(rad);
@@ -354,7 +359,7 @@ function currentPose() {
       }
     }
   }
-  if (state.mode === "expr") Object.assign(attOverride, exprOverrides());
+  if (state.show.expr) Object.assign(attOverride, exprOverrides());
   return { anim, t: state.t, cache: {}, attOverride };
 }
 function render() {
@@ -368,9 +373,10 @@ function render() {
   const pose = currentPose();
   const showB = $("showBounds").checked, showP = $("showPivot").checked;
   const skin = (state.skel.skins && state.skel.skins[0]) || { attachments: {} };
-  ctx.globalAlpha = dimAlpha();
+  const drawTex = state.show.texture;
+  ctx.globalAlpha = textureAlpha();
 
-  for (let i = 0; i < state.slots.length; i++) {
+  for (let i = 0; i < state.slots.length && drawTex; i++) {
     const sl = state.slots[i];
     if (state.hidden.has(sl.name)) continue;
     const attName = pose.attOverride[sl.name] || sl.attachment;
@@ -415,9 +421,9 @@ function render() {
     }
   }
   ctx.globalAlpha = 1;
-  if (state.mode === "bones") drawBoneOverlay(pose);
-  if (state.mode === "weights") drawWeightOverlay(pose);
-  if (state.mode === "mesh") drawMeshOverlay(pose);
+  if (state.show.bones) drawBoneOverlay(pose);
+  if (state.show.weights) drawWeightOverlay(pose);
+  if (state.show.mesh) drawMeshOverlay(pose);
 }
 
 /* ---------------- 查看模式 ---------------- */
@@ -429,7 +435,11 @@ function ikBoneSet() {
   }
   return set;
 }
-function dimAlpha() { return state.mode === "texture" ? 1 : 0.3; }
+function overlayActive() { const v = state.show; return v.bones || v.weights || v.mesh; }
+function textureAlpha() {
+  if (!state.show.texture) return 0;          // 未勾选贴图 → 不画角色
+  return overlayActive() ? 0.35 : 1;          // 叠了覆盖层就压暗，保证可读
+}
 
 function drawBoneOverlay(pose) {
   const ik = ikBoneSet();
@@ -799,6 +809,7 @@ cv.addEventListener("pointerdown", e => {
     cv.style.cursor = "grabbing"; cv.setPointerCapture(e.pointerId); return;
   }
   if (state.playing) { state.playing = false; $("btnPlay").innerHTML = spineIcon("play") + "播放"; $("btnPlay").classList.remove("on"); }
+  if (!state.show.texture) { setStatus("未勾选「贴图」：当前只显示调试层，不能拖动部件", true); return; }
   const p = unproj(e.offsetX, e.offsetY);
   const hit = hitTest(p, currentPose());
   if (hit >= 0) {
@@ -870,11 +881,11 @@ function save() {
 
 /* ---------------- 模式切换 ---------------- */
 function refreshModePanels() {
-  $("bonesPanel").style.display = state.mode === "bones" ? "" : "none";
-  $("exprPanel").style.display = state.mode === "expr" ? "" : "none";
-  $("weightsPanel").style.display = state.mode === "weights" ? "" : "none";
-  $("meshPanel").style.display = state.mode === "mesh" ? "" : "none";
-  if (state.mode === "bones") {
+  $("bonesPanel").style.display = state.show.bones ? "" : "none";
+  $("exprPanel").style.display = state.show.expr ? "" : "none";
+  $("weightsPanel").style.display = state.show.weights ? "" : "none";
+  $("meshPanel").style.display = state.show.mesh ? "" : "none";
+  if (state.show.bones) {
     const ik = ikBoneSet();
     const ikCount = ik.size, fkCount = state.boneList.length - ikCount;
     $("boneLegend").innerHTML =
@@ -884,8 +895,8 @@ function refreshModePanels() {
       ? "蓝线为 FK 链、琥珀色为 IK（来自 skeleton.ik 列表）。关节圆点即骨骼原点，也是部件轴心。"
       : "本角色包没有 ik 约束（skeleton.ik 为空），所以全部是 FK 链。若要区分 IK，需在骨架里配置 ik 约束或按命名约定标注。";
   }
-  if (state.mode === "expr") refreshExprPanel();
-  if (state.mode === "weights") {
+  if (state.show.expr) refreshExprPanel();
+  if (state.show.weights) {
     const legend = $("legend");
     legend.innerHTML = "";
     state.slots.slice(0, 6).forEach((sl, k) => {
@@ -896,15 +907,19 @@ function refreshModePanels() {
     });
     $("weightsNote").textContent = '当前角色包为单骨刚性绑定：每个部件权重 1.0，颜色只表示"归属哪根骨"。带网格权重（vertices/weights）的角色包会显示真正的热力图。';
   }
-  if (state.mode === "mesh") {
+  if (state.show.mesh) {
     $("meshNote").textContent = '显示每个部件的网格细分与包围框；右下角是图集 UV 预览，黄框为选中部件在图集中的区域。带真实网格数据（vertices/triangles）时会画出三角面。';
   }
 }
-function setMode(m) {
-  state.mode = m;
-  document.querySelectorAll("#modeBar button").forEach(b => b.classList.toggle("on", b.dataset.mode === m));
-  refreshModePanels();
-  render();
+function bindLayerToggles() {
+  document.querySelectorAll("#layerBar input[data-layer]").forEach(cb => {
+    cb.addEventListener("change", () => {
+      state.show[cb.dataset.layer] = cb.checked;
+      if (cb.dataset.layer === "texture" && cb.checked) setStatus("已恢复贴图：可以拖动部件了");
+      refreshModePanels();
+      render();
+    });
+  });
 }
 
 /* ---------------- UI 绑定 ---------------- */
@@ -920,8 +935,7 @@ $("btnSave").onclick = save;
 $("btnUndo").onclick = undo;
 $("btnReset").onclick = () => { while (state.undo.length) undo(); };
 $("btnFit").onclick = () => { fitView(); render(); };
-document.querySelectorAll("#modeBar button").forEach(b =>
-  b.addEventListener("click", () => setMode(b.dataset.mode)));
+bindLayerToggles();
 function bindExpr(id, key, fmt) {
   const el = $(id), out = $(id + "V");
   el.oninput = () => {
