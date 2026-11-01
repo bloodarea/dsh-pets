@@ -15,7 +15,7 @@ The product is organized around four focused modules:
 | Module | Planned capabilities |
 | --- | --- |
 | **Session Management** | Show active top-level DSH sessions, quickly switch to a selected session, and notify on task completion, failure, or approval requests. Keep missed notifications accessible. |
-| **Character System** | Display Live2D characters or sprite-sheet pets, associate characters with model identities, and map agent states to expressions and motions. |
+| **Character System** | Display Spine characters or sprite-sheet pets, associate characters with model identities, and map agent states to expressions and motions. |
 | **Voice System** | Play **pre-recorded voice lines** for events, with character-specific voice packs, volume/mute controls, cooldowns, and optional lip sync. |
 | **Desktop Interaction** | Transparent floating window, drag/position persistence, system tray, click-through behavior, do-not-disturb mode, and basic performance settings. |
 
@@ -24,7 +24,7 @@ The product is organized around four focused modules:
 1. **Switch between running sessions quickly** from the desktop pet's session list or bubbles.
 2. **Receive reliable task-completion alerts**, including an actionable path back to the corresponding session.
 
-Live2D animation and voice make these workflows more expressive; they must never prevent session controls and notifications from working.
+Character animation and voice make these workflows more expressive; they must never prevent session controls and notifications from working.
 
 ## How it should feel
 
@@ -51,8 +51,8 @@ Electron desktop companion (main process)
   ├─ Window, tray, platform integration
   └─ React + TypeScript UI
        ├─ Session bubbles and notification history
-       ├─ Live2D renderer (Cubism SDK for Web)
-       ├─ Sprite renderer (fallback)
+       ├─ Spine renderer (primary character format)
+       ├─ Static-image fallback (no GPU / reduced mode)
        └─ Pre-recorded voice playback + optional lip sync
 ```
 
@@ -60,23 +60,26 @@ Electron desktop companion (main process)
 
 ### Character assets
 
-Each character can have its own model, motions, expressions, and recorded audio clips. A possible asset layout is:
+Character packs are self-contained directories with a single contract file. The bundled default pack ships inside the package; every other pack is downloaded on demand into the user's data directory, which takes precedence over the bundled copy.
 
 ```text
-characters/
-  example-character/
+assets/characters/                 # bundled, read-only
+  index.json                       # downloadable-pack index (version, sha256, url)
+  deepseek/                        # the only pack shipped with the package
     manifest.json
-    live2d/                # Cubism model and related files
-    sprites/               # Optional sprite fallback
-    voice/
-      task-completed.ogg
-      task-failed.ogg
-      approval-required.ogg
+    LICENSE
+    preview.webp
+    spine/                         # Spine skeleton, atlas and textures
+    voice/                         # pre-recorded status lines (optional per event)
+
+~/.dsh/pets/characters/<id>/       # downloaded, writable, overrides the bundled copy
 ```
 
-This is an **illustrative layout**, not a finalized asset schema. Voice lines are generated or recorded **ahead of time** and bundled with a character pack. **There is no runtime text-to-speech generation requirement**, no mandatory TTS API, and no need to send session text to a speech provider.
+`manifest.json` is the contract, so the runtime never guesses file names. It declares the Spine entry plus scale and anchor, the agent-state → animation mapping (`idle`, `working`, `attention`, `done`, `failed`), which voice lines exist for each event, and a static-image fallback for machines without GPU acceleration. A pack may omit a voice event, and that event simply stays silent.
 
-Tools for producing illustrations, layered images, animations, or audio may be used **offline during asset creation**; they are not part of the DSH Pets runtime.
+This layout is the **agreed target**, not yet implemented. Voice lines are recorded or generated **ahead of time** and shipped inside a character pack. **There is no runtime text-to-speech generation requirement**, no mandatory TTS API, and no need to send session text to a speech provider.
+
+Tools for producing illustrations, skeleton animation, or audio may be used **offline during asset creation**; they are not part of the DSH Pets runtime.
 
 ## Roadmap
 
@@ -87,14 +90,14 @@ Tools for producing illustrations, layered images, animations, or audio may be u
 - [ ] Completion, failure, and approval alerts with deduplication
 - [ ] Missed/unread notifications and safe reconnection behavior
 - [ ] Cross-platform desktop window and tray foundation
-- [ ] Live2D rendering with sprite fallback
+- [ ] Spine character rendering with static-image fallback
 - [ ] Pre-recorded voice playback, mute, and event cooldown
 - [ ] Dragging, remembered position, and basic do-not-disturb controls
 - [ ] Ubuntu 24.04 end-to-end verification
 
 ### Later improvements
 
-- [ ] Model-to-character mapping and character-pack management UI
+- [ ] Model-to-character mapping, character-pack management UI, and on-demand pack download
 - [ ] Better mouth-motion synchronization and natural idle interactions
 - [ ] Edge docking, auto-hide, and configurable mouse pass-through
 - [ ] Power-saving / reduced-frame-rate mode
@@ -112,7 +115,7 @@ Design priorities:
 
 - Prefer explicit task lifecycle signals; losing connectivity must **not** be mistaken for successful completion.
 - Deduplicate completion events, retain unread notices, and restore the visible state after reconnection when supported by DSH.
-- Keep controls usable when Live2D, audio, or GPU acceleration is unavailable.
+- Keep controls usable when the character renderer, audio, or GPU acceleration is unavailable.
 - Keep communication local by default and restrict exposed control endpoints; remote-access configurations must be secured separately.
 - Do not read task contents aloud by default. Recorded voice lines communicate predefined **status messages**, not arbitrary code, secrets, or chat content.
 - Provide mute, do-not-disturb, and lower-resource options for long-running desktop use.
@@ -127,7 +130,7 @@ The project is in an early stage. Issues, platform-specific bug reports, and rep
 
 DSH Pets is intended to evolve from [zuodazuoqiang001/dsh-pet](https://github.com/zuodazuoqiang001/dsh-pet), which is published under the **MIT License**. Any reused upstream code must retain the original copyright and license notices. This project's repository should include the applicable `LICENSE` file.
 
-**Character artwork, Live2D models, voice recordings, and third-party SDKs have their own licenses.** No third-party character or voice asset should be bundled without permission, and Live2D Cubism distribution terms must be checked before shipping expandable model-loading features.
+**Character artwork, Spine animation data, voice recordings, and third-party SDKs have their own licenses.** No third-party character or voice asset should be bundled without permission, and every pack ships its own `LICENSE` next to its assets. Spine runtimes and exported animation data are subject to Esoteric Software's commercial licensing terms; confirm the applicable terms before shipping. Character packs are themed after model families but are **not** official brand material.
 
 ---
 

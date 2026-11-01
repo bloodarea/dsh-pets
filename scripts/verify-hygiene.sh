@@ -16,6 +16,7 @@ set -uo pipefail
 
 MAX_FILE_MIB=5    # 单文件硬上限
 MAX_IMAGE_MIB=3   # docs/assets 图片更严，README 加载速度优先
+MAX_CHARACTER_MIB=8  # 角色资源（Spine 贴图 / 语音）单文件上限，比通用值宽
 
 RED=''; GRN=''; YEL=''; RST=''
 if [ -t 1 ]; then RED=$'\033[31m'; GRN=$'\033[32m'; YEL=$'\033[33m'; RST=$'\033[0m'; fi
@@ -72,6 +73,11 @@ is_docs_asset() {
   esac
 }
 
+# 角色资源：随包发布的默认角色（体积上限单独放宽）
+is_character_asset() {
+  case "$1" in assets/characters/*) return 0 ;; *) return 1 ;; esac
+}
+
 # 取文件字节数：优先索引/HEAD 中的 blob（能查尚未检出的删除场景）
 blob_size() {
   local p=$1 s=''
@@ -97,6 +103,14 @@ for f in "${files[@]}"; do
     # --- 规则 3：依赖与构建产物 ---
     node_modules/*|.pnpm-store/*|dist/*|build/*|out/*|coverage/*|.vite/*|.turbo/*|.cache/*|*.tsbuildinfo)
       block "$f" "依赖 / 构建产物不入库（由安装与构建流程重建）"; continue ;;
+    # --- 规则 3b：角色资源只放默认包（其余角色按需下载）---
+    assets/characters/*)
+      case "$f" in
+        assets/characters/index.json|assets/characters/deepseek/*) : ;;
+        *)
+          block "$f" "非默认角色包不入库：仅 deepseek 随包发布，其余角色从 GitHub Releases 按需下载（运行时落在 ~/.dsh/pets/characters/）"
+          continue ;;
+      esac ;;
     # --- 规则 4：凭据与本地配置 ---
     *.pem|*.key|*.p12|*.pfx|secrets.json|local.config.json)
       block "$f" "凭据类文件严禁入库"; continue ;;
@@ -120,6 +134,10 @@ for f in "${files[@]}"; do
       block "$f" "README 图片超过 ${MAX_IMAGE_MIB} MiB（$(human "$size")）：请压缩或降分辨率"
     elif [ "$size" -gt 1048576 ]; then
       warn "$f" "README 图片偏大（$(human "$size")），建议压到 1 MiB 以内"
+    fi
+  elif is_character_asset "$f"; then
+    if [ "$size" -gt $((MAX_CHARACTER_MIB * 1048576)) ]; then
+      block "$f" "角色资源单文件超过 ${MAX_CHARACTER_MIB} MiB（$(human "$size")）：请压缩贴图或降低音频码率"
     fi
   else
     if [ "$size" -gt $((MAX_FILE_MIB * 1048576)) ]; then

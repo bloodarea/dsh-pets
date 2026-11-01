@@ -73,3 +73,11 @@ scratch/
 *.pfx
 secrets.json
 local.config.json
+
+# --- 7. 角色资源：只放默认角色，其余按需下载 ------------------------------
+# 随包发布的只有 deepseek 包与下载索引；其他角色从 GitHub Releases 按需下载，
+# 运行时落在用户目录（~/.dsh/pets/characters/），永不进仓库。
+# 同样保留父目录、只忽略内容，否则 Negation（!）无法生效。
+/assets/characters/*
+!/assets/characters/deepseek/
+!/assets/characters/index.json

@@ -1,6 +1,6 @@
 # 贡献指南 · 文件卫生规则
 
-> 本仓是 DeepSeek Harness 的跨平台桌面宠物插件（Live2D + 会话切换 + 任务完成提醒）。
+> 本仓是 DeepSeek Harness 的跨平台桌面宠物插件（Spine 角色 + 会话切换 + 任务完成提醒）。
 > 文件卫生的目标只有一句话：**仓库只装"重建它所需的最小集合"——源码、声明、必要资源；其余一切留在本机。**
 > 规则由 `.gitignore` 宣布、由 `scripts/verify-hygiene.sh` 强制执行（pre-commit 钩子调用），两者必须同步修改。
 
@@ -13,6 +13,9 @@
 | `README.md` `README_zh.md` `CONTRIBUTING.md` `AGENTS.md` | ✅ | 对外文档与协作约定 |
 | `scripts/` | ✅ | 构建 / 校验 / 发布脚本 |
 | `THIRD-PARTY-NOTICES.md` | ✅ | 第三方代码与资源出处、许可证 |
+| `assets/characters/deepseek/**` | ✅ | **默认角色包**（Spine 模型、语音、preview），随程序打包 |
+| `assets/characters/index.json` | ✅ | 可下载角色索引（版本 / sha256 / 下载地址） |
+| `assets/characters/<其他 id>/**` | ❌ | 其他角色按需下载，运行时落 `~/.dsh/pets/characters/` |
 | **`docs/**`（文档、设计稿、调研笔记、PDF/Office 文件）** | ❌ | 内部文档只在本地保存 |
 | **`docs/assets/*.png` 等图片** | ✅ | README 需要引用的图片与截图（**唯一例外**） |
 | **`references/`** | ❌ | 参考项目源码、技术实验、验证脚本、抓包与实验数据 |
@@ -28,7 +31,7 @@
 - 允许扩展名：`.png` `.jpg` `.jpeg` `.gif` `.webp` `.svg` `.avif`
 - **必须扁平**：`docs/assets/` 下不建子目录（`.gitignore` 的否定规则无法穿透被排除的父目录）
 - README 中引用写相对路径：`![宠物面板](docs/assets/pet-panel.png)`
-- 命名用 kebab-case 并体现内容：`pet-panel.png`、`settings-live2d.png`、`session-switch.gif`
+- 命名用 kebab-case 并体现内容：`pet-panel.png`、`settings-spine.png`、`session-switch.gif`
 
 图片体积门禁（`scripts/verify-hygiene.sh` 硬校验）：
 
@@ -37,12 +40,33 @@
 | 建议值 | ≤ 1 MiB | 超过只告警 |
 | 硬上限 | 3 MiB | 超限阻止提交，需压缩或降分辨率 |
 | 通用单文件 | 5 MiB | 任何非图片文件超限即阻止 |
+| 角色资源单文件 | 8 MiB | Spine 贴图 / 语音上限，超限要求压缩 |
 
 不收的媒体：录屏 `mp4`、带声音的演示、`pdf/docx/pptx`、原始设计稿（Figma/AI/PSD）。需要动图就转 `webp` 或 `gif` 再压。
 
-## 3. `references/`：参考项目与技术实验的隔离区
+## 3. `assets/characters/`：只放默认角色包
 
-用于存放：clone 下来的同类/上游项目、技术验证 demo、Live2D 与 Electron 能力的实验代码、性能测试与抓包数据。**整目录不入库**，理由：
+角色资源分两类存放，仓库里只保留第一类：
+
+| 类别 | 位置 | 谁写 | 是否入库 |
+| --- | --- | --- | --- |
+| 默认角色（随程序打包） | `assets/characters/deepseek/**` | 版本发布时确定 | ✅ 入库 |
+| 其他角色（按需下载） | `~/.dsh/pets/characters/<id>/**` | 运行时下载 | ❌ 永不入库 |
+
+- 白名单只有两项：`assets/characters/deepseek/**` 与 `assets/characters/index.json`；
+  其他 `assets/characters/<id>/` 一律忽略，且 `verify-hygiene.sh` 会拦住 `git add -f`。
+- **不要把下载包写进 `assets/`**：安装目录在打包后只读（macOS 在 `.app` 内）、全局安装的
+  `node_modules` 会被更新整目录替换，用户下载的角色会丢。
+- 运行时解析顺序：用户目录 > 内置目录（同名时用户覆盖内置），并提供"重置为内置"。
+- 每个角色包必须有 `manifest.json`（`schemaVersion` / `id` / `version` / `render` / `states` /
+  `fallback` / `voice` / `license`）与 `LICENSE`；格式细节见本地文档
+  `docs/architecture/character-pack-format.md`（`docs/` 不入库）。
+- **授权前置**：Spine 运行时与导出动画数据受 Esoteric Software 的商业许可约束，新增角色包前
+  先确认许可与素材来源；品牌主题（DeepSeek / Claude / GPT / Kimi / Qwen）需标注"非官方"。
+
+## 4. `references/`：参考项目与技术实验的隔离区
+
+用于存放：clone 下来的同类/上游项目、技术验证 demo、Spine 渲染与窗口层/Electron 能力的实验代码、性能测试与抓包数据。**整目录不入库**，理由：
 
 1. 体积与历史污染：第三方仓库动辄数十 MB，一旦入库会永久留在 git 历史里；
 2. 许可证风险：参考项目的 LICENSE 与本仓未必兼容，拷贝进来等于事实上的再分发；
@@ -50,7 +74,7 @@
 
 确需引用第三方代码时的做法：**要么重写，要么只取最小片段 + 在 `THIRD-PARTY-NOTICES.md` 记录出处、许可证与改动**；第三方依赖一律走 `package.json`，不要 vendored 拷贝。
 
-## 4. 提交前自检
+## 5. 提交前自检
 
 ```bash
 # 每个克隆执行一次，装 pre-commit 钩子
@@ -74,7 +98,7 @@ git commit --amend --no-edit        # 若已提交但未推送
 
 `--no-verify` 只允许在确认误判时使用，且必须在 PR / 提交说明里写明原因，否则视为违规。
 
-## 5. 修改规则的流程
+## 6. 修改规则的流程
 
 1. 同时改 `.gitignore` 与 `scripts/verify-hygiene.sh`（二者是同一规则的两份表述：前者防误加，后者防强推）；
 2. 在本文件补齐说明与理由；

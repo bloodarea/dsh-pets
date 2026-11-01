@@ -25,11 +25,13 @@
 *.woff2      binary
 *.ttf        binary
 *.otf        binary
-# Live2D 运行时资源
-*.moc3       binary
-*.model3.json text eol=lf
-*.motion3.json text eol=lf
-*.physics3.json text eol=lf
+# 角色模型资源：Spine（最终选定的渲染格式）
+*.skel       binary
+*.atlas      text eol=lf
+*.spine      binary
+
+# 说明：曾计划使用 Live2D，已定为 Spine。若将来重新引入其他模型格式，
+# 在此补对应二进制/文本标记即可。
 
 # --- 生成物：折叠 diff、标注来源 ------------------------------------------
 *.lock       linguist-generated
