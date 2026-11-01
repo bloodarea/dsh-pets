@@ -53,25 +53,32 @@
   #hint{padding:6px 10px;border-top:1px solid var(--line);color:var(--dim);font-size:11.5px}
   .badge{background:#2a3242;border-radius:4px;padding:1px 6px;color:var(--dim)}
   .mono{font-variant-numeric:tabular-nums}
+  /* 图标：16 网格 · 1.6 线宽 · 圆角端点，颜色继承按钮文字 */
+  .ic{width:14px;height:14px;display:inline-block;vertical-align:-2.5px;
+      stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;
+      pointer-events:none}
+  button .ic{width:13px;height:13px;margin-right:3px}
+  .item .mv button .ic,.item .eye .ic{margin:0;width:12.5px;height:12.5px}
+  label .ic{width:13px;height:13px;margin-right:2px;stroke:var(--dim)}
 </style>
 </head>
 <body>
 <header>
   <div class="grp">
-    <button id="btnLoad" class="primary">载入文件…</button>
-    <button id="btnSample">载入仓库示例</button>
+    <button id="btnLoad" class="primary"><svg class="ic"><use href="#i-open"></use></svg>载入文件…</button>
+    <button id="btnSample"><svg class="ic"><use href="#i-sample"></use></svg>载入仓库示例</button>
     <input id="files" type="file" multiple accept=".json,.atlas,.png,.webp" hidden>
   </div>
   <div class="grp">
-    <button id="btnSave" disabled>保存 JSON</button>
-    <button id="btnUndo" disabled>撤销</button>
-    <button id="btnReset" disabled>重置</button>
+    <button id="btnSave" disabled><svg class="ic"><use href="#i-save"></use></svg>保存 JSON</button>
+    <button id="btnUndo" disabled><svg class="ic"><use href="#i-undo"></use></svg>撤销</button>
+    <button id="btnReset" disabled><svg class="ic"><use href="#i-reset"></use></svg>重置</button>
   </div>
   <div class="grp">
     <label>动画</label>
     <select id="animSel" disabled><option value="">（无）</option></select>
-    <button id="btnPlay" disabled>▶ 播放</button>
-    <button id="btnStop" disabled>■ 停止</button>
+    <button id="btnPlay" disabled><svg class="ic"><use href="#i-play"></use></svg>播放</button>
+    <button id="btnStop" disabled><svg class="ic"><use href="#i-stop"></use></svg>停止</button>
     <label><input id="loopChk" type="checkbox" checked> 循环</label>
     <select id="speedSel" disabled>
       <option value="0.25">0.25×</option><option value="0.5">0.5×</option>
@@ -87,11 +94,11 @@
     <label>Y</label><input id="posY" type="number" step="1" disabled>
   </div>
   <div class="grp">
-    <button id="btnShowAll" disabled>全部显示</button>
+    <button id="btnShowAll" disabled><svg class="ic"><use href="#i-eye"></use></svg>全部显示</button>
   </div>
   <div class="grp">
     <span class="badge mono" id="zoomLabel">—</span>
-    <button id="btnFit">适配</button>
+    <button id="btnFit"><svg class="ic"><use href="#i-fit"></use></svg>适配</button>
     <label><input id="showBounds" type="checkbox"> 边框</label>
     <label><input id="showPivot" type="checkbox"> 轴心</label>
   </div>
@@ -112,6 +119,7 @@
   </aside>
 </main>
 
+<script src="icons.js"></script>
 <script>
 "use strict";
 (() => {
@@ -364,14 +372,14 @@ function setAnim(name) {
   state.anim = name;
   state.animDur = animDuration(name);
   state.t = 0; state.playing = false;
-  $("btnPlay").textContent = "▶ 播放"; $("btnPlay").classList.remove("on");
+  $("btnPlay").innerHTML = spineIcon("play") + "播放"; $("btnPlay").classList.remove("on");
   $("btnStop").disabled = !name;
   updateTimeLabel(); render();
 }
 function togglePlay() {
   if (!state.anim) { setStatus("先选一个动画", true); return; }
   state.playing = !state.playing;
-  $("btnPlay").textContent = state.playing ? "⏸ 暂停" : "▶ 播放";
+  $("btnPlay").innerHTML = spineIcon(state.playing ? "pause" : "play") + (state.playing ? "暂停" : "播放");
   $("btnPlay").classList.toggle("on", state.playing);
   if (state.playing) {
     if (state.t >= state.animDur) state.t = 0;
@@ -389,7 +397,7 @@ function tick(ts) {
     if (state.loop && state.animDur > 0) state.t %= state.animDur;
     else {
       state.t = state.animDur; state.playing = false;
-      $("btnPlay").textContent = "▶ 播放"; $("btnPlay").classList.remove("on");
+      $("btnPlay").innerHTML = spineIcon("play") + "播放"; $("btnPlay").classList.remove("on");
     }
   }
   updateTimeLabel(); render();
@@ -405,15 +413,15 @@ function renderList() {
     const hid = state.hidden.has(sl.name);
     el.className = "item" + (i === state.sel ? " sel" : "") + (hid ? " hid" : "");
     el.innerHTML = `<span class="z">${i}</span><span class="nm">${sl.attachment}</span>
-      <button class="eye" data-eye="1" title="${hid ? "显示" : "隐藏"}">${hid ? "🙈" : "👁"}</button>
+      <button class="eye" data-eye="1" title="${hid ? "显示" : "隐藏"}">${spineIcon(hid ? "eye-off" : "eye")}</button>
       <span class="mv">
-        <button data-a="top" title="置顶">⤒</button>
-        <button data-a="up" title="上移">↑</button>
-        <button data-a="down" title="下移">↓</button>
-        <button data-a="bottom" title="置底">⤓</button>
+        <button data-a="top" title="置顶">${spineIcon("layer-front")}</button>
+        <button data-a="up" title="上移">${spineIcon("layer-up")}</button>
+        <button data-a="down" title="下移">${spineIcon("layer-down")}</button>
+        <button data-a="bottom" title="置底">${spineIcon("layer-back")}</button>
       </span>`;
     el.addEventListener("click", e => {
-      if (e.target.tagName !== "BUTTON") select(i);
+      if (!e.target.closest("button")) select(i);
     });
     el.querySelector('button[data-eye]').addEventListener("click", e => {
       e.stopPropagation(); toggleHidden(i);
@@ -506,7 +514,7 @@ cv.addEventListener("pointerdown", e => {
     drag = { mode: "pan", sx: e.clientX, sy: e.clientY, panX: state.panX, panY: state.panY };
     cv.style.cursor = "grabbing"; cv.setPointerCapture(e.pointerId); return;
   }
-  if (state.playing) { state.playing = false; $("btnPlay").textContent = "▶ 播放"; $("btnPlay").classList.remove("on"); }
+  if (state.playing) { state.playing = false; $("btnPlay").innerHTML = spineIcon("play") + "播放"; $("btnPlay").classList.remove("on"); }
   const p = unproj(e.offsetX, e.offsetY);
   const hit = hitTest(p, currentPose());
   if (hit >= 0) {
@@ -600,7 +608,7 @@ $("animSel").onchange = e => setAnim(e.target.value);
 $("btnPlay").onclick = togglePlay;
 $("btnStop").onclick = () => {
   state.playing = false; state.t = 0;
-  $("btnPlay").textContent = "▶ 播放"; $("btnPlay").classList.remove("on");
+  $("btnPlay").innerHTML = spineIcon("play") + "播放"; $("btnPlay").classList.remove("on");
   updateTimeLabel(); render();
 };
 $("loopChk").onchange = e => state.loop = e.target.checked;
@@ -608,7 +616,7 @@ $("speedSel").onchange = e => state.speed = parseFloat(e.target.value);
 $("scrub").oninput = e => {
   if (!state.animDur) return;
   state.playing = false;
-  $("btnPlay").textContent = "▶ 播放"; $("btnPlay").classList.remove("on");
+  $("btnPlay").innerHTML = spineIcon("play") + "播放"; $("btnPlay").classList.remove("on");
   state.t = state.animDur * (Number(e.target.value) / 1000);
   updateTimeLabel(); render();
 };
@@ -620,6 +628,10 @@ function nudge(axis, val) {
   pushUndo(); b[axis] = val; state.dirty = true;
   render(); renderList(); syncInputs();
 }
+[["showBounds", "bounds"], ["showPivot", "pivot"]].forEach(([id, ic]) => {
+  const cb = $(id), lab = cb && cb.closest("label");
+  if (lab && !lab.querySelector(".ic")) lab.insertAdjacentHTML("afterbegin", spineIcon(ic));
+});
 new ResizeObserver(() => render()).observe($("stage"));
 updateTimeLabel();
 render();

@@ -52,6 +52,26 @@ python3 -m http.server 8123 --bind 127.0.0.1
 | 隐藏部件 | 列表每行的 👁 / 🙈 图标；`H` 切换选中件；`全部显示` 一键恢复 |
 | 隐藏的用途 | 排查遮挡关系（比如藏掉头发看身体接缝）、确认某部件是否多余 |
 
+## 图标集
+
+界面上的图标是自绘的一套 16×16 SVG，风格统一（1.6 线宽、圆角端点、颜色跟随按钮文字），
+全部是内联雪碧图，不依赖外部资源：
+
+| 文件 | 作用 |
+| --- | --- |
+| `icons.js` | 定义 27 个图标符号（`symbol#i-*`）并注入文档；对外暴露 `spineIcon(name)` |
+| `icons-preview.html` | 图标一览页（含 13/14/16/28px 缩放效果），改图标时先在这看 |
+
+图标名单（spine 语义 + 编辑器操作）：
+
+`bone` `joint` `mesh` `keyframe` `timeline` `layers` `physics` `layer-front` `layer-back`
+`layer-up` `layer-down` `eye` `eye-off` `play` `pause` `stop` `loop` `open` `sample`
+`save` `undo` `reset` `fit` `bounds` `pivot` `move` `trash`
+
+新增图标：在 `icons.js` 的 `ICONS` 里加一条（`viewBox="0 0 16 16"`，只写内部路径），
+然后在 `index.html` 里用 `<svg class="ic"><use href="#i-名字"></use></svg>`，
+或直接调 `spineIcon("名字")` 生成字符串。
+
 ## 保存与回灌
 
 点 **保存 JSON** 会下载 `model.json`。回灌流程：
