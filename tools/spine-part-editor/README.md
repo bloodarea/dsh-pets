@@ -5,13 +5,26 @@
 
 ## 启动
 
-浏览器对 `file://` 的 `fetch` 有限制，所以起个静态服务再打开：
+三平台都是一条命令，**不需要 pip 安装任何依赖**（只用 Python 3 标准库）：
+
+| 平台 | 命令 |
+| --- | --- |
+| Linux / macOS | `./tools/spine-part-editor/start.sh` |
+| Windows | 双击 `tools\spine-part-editor\start.bat`，或命令行 `start.bat` |
+
+脚本会：自动选空闲端口（默认 8123，被占用就往后找）→ 在**仓库根目录**起静态服务 →
+打开浏览器。用 `--port 9000` 指定端口，`--no-browser` 只起服务。
+
+等价的手工方式：
 
 ```bash
-cd /home/dev/SourceCodeLibrary/Plugins/dsh-pets
+cd /home/dev/SourceCodeLibrary/Plugins/dsh-pets     # 必须在仓库根
 python3 -m http.server 8123 --bind 127.0.0.1
 # 浏览器打开 http://127.0.0.1:8123/tools/spine-part-editor/
 ```
+
+> 为什么必须起服务：编辑器要 `fetch` 同仓库的 `assets/.../model.json`，
+> 浏览器对 `file://` 的 fetch 一律拒绝，直接双击 html 会载入失败。
 
 ## 载入角色
 
