@@ -1,0 +1,599 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Spine 部件编辑器 · dsh-pets</title>
+<style>
+  :root{--bg:#151821;--panel:#1e2330;--line:#2c3444;--fg:#e6ebf5;--dim:#8b98ad;
+        --accent:#5aa9ff;--ok:#4ec9a5;--warn:#f0b429}
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{display:flex;flex-direction:column;background:var(--bg);color:var(--fg);
+       font:13px/1.5 system-ui,-apple-system,"Segoe UI","Noto Sans CJK SC",sans-serif;overflow:hidden}
+  header{display:flex;gap:8px;align-items:center;padding:7px 10px;background:var(--panel);
+         border-bottom:1px solid var(--line);flex-wrap:wrap}
+  header .grp{display:flex;gap:6px;align-items:center;padding-right:10px;border-right:1px solid var(--line)}
+  header .grp:last-child{border:0}
+  button{background:#2a3242;color:var(--fg);border:1px solid var(--line);border-radius:5px;
+         padding:4px 9px;cursor:pointer;font:inherit}
+  button:hover:not(:disabled){background:#34405a}
+  button:disabled{opacity:.4;cursor:default}
+  button.primary{background:#1f4f86;border-color:#2f6cb0}
+  button.on{background:#1f4f86;border-color:#2f6cb0}
+  input[type=text],input[type=number]{background:#11141c;color:var(--fg);border:1px solid var(--line);
+         border-radius:4px;padding:3px 6px;font:inherit;width:74px}
+  select{background:#11141c;color:var(--fg);border:1px solid var(--line);border-radius:4px;
+         padding:3px 6px;font:inherit;max-width:160px}
+  input[type=range]{width:170px;vertical-align:middle}
+  label{color:var(--dim)}
+  main{flex:1;display:flex;min-height:0}
+  #stage{flex:1;position:relative;overflow:hidden;background:
+     repeating-conic-gradient(#202634 0 25%,#1a1f2b 0 50%) 0 0/24px 24px}
+  canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+  aside{width:296px;background:var(--panel);border-left:1px solid var(--line);
+        display:flex;flex-direction:column;min-height:0}
+  aside h3{margin:0;padding:7px 10px;font-size:11px;color:var(--dim);border-bottom:1px solid var(--line);
+           letter-spacing:.06em;text-transform:uppercase}
+  #list{flex:1;overflow:auto;padding:4px;min-height:80px}
+  .item{display:flex;align-items:center;gap:6px;padding:3px 6px;border-radius:5px;cursor:pointer;
+        border:1px solid transparent}
+  .item:hover{background:#242c3b}
+  .item.sel{background:#1d3a5c;border-color:var(--accent)}
+  .item .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .item .z{color:var(--dim);font-variant-numeric:tabular-nums;width:18px;text-align:right}
+  .item .mv{display:flex;gap:2px}
+  .item .mv button{padding:0 5px;font-size:11px;line-height:17px}
+  #info{padding:7px 10px;border-top:1px solid var(--line);display:grid;
+        grid-template-columns:auto 1fr;gap:5px 8px;font-size:12px}
+  #info .k{color:var(--dim)}
+  #hint{padding:6px 10px;border-top:1px solid var(--line);color:var(--dim);font-size:11.5px}
+  .badge{background:#2a3242;border-radius:4px;padding:1px 6px;color:var(--dim)}
+  .mono{font-variant-numeric:tabular-nums}
+</style>
+</head>
+<body>
+<header>
+  <div class="grp">
+    <button id="btnLoad" class="primary">载入文件…</button>
+    <button id="btnSample">载入仓库示例</button>
+    <input id="files" type="file" multiple accept=".json,.atlas,.png,.webp" hidden>
+  </div>
+  <div class="grp">
+    <button id="btnSave" disabled>保存 JSON</button>
+    <button id="btnUndo" disabled>撤销</button>
+    <button id="btnReset" disabled>重置</button>
+  </div>
+  <div class="grp">
+    <label>动画</label>
+    <select id="animSel" disabled><option value="">（无）</option></select>
+    <button id="btnPlay" disabled>▶ 播放</button>
+    <button id="btnStop" disabled>■ 停止</button>
+    <label><input id="loopChk" type="checkbox" checked> 循环</label>
+    <select id="speedSel" disabled>
+      <option value="0.25">0.25×</option><option value="0.5">0.5×</option>
+      <option value="1" selected>1×</option><option value="2">2×</option>
+    </select>
+  </div>
+  <div class="grp">
+    <input id="scrub" type="range" min="0" max="1000" value="0" disabled>
+    <span class="badge mono" id="timeLabel">0.00s</span>
+  </div>
+  <div class="grp">
+    <label>X</label><input id="posX" type="number" step="1" disabled>
+    <label>Y</label><input id="posY" type="number" step="1" disabled>
+  </div>
+  <div class="grp">
+    <span class="badge mono" id="zoomLabel">—</span>
+    <button id="btnFit">适配</button>
+    <label><input id="showBounds" type="checkbox"> 边框</label>
+    <label><input id="showPivot" type="checkbox"> 轴心</label>
+  </div>
+  <div class="grp"><span class="badge" id="status">未载入</span></div>
+</header>
+
+<main>
+  <div id="stage"><canvas id="cv"></canvas></div>
+  <aside>
+    <h3>绘制层级（上=最前）</h3>
+    <div id="list"></div>
+    <div id="info">
+      <span class="k">选中</span><span id="selName">—</span>
+      <span class="k">骨骼</span><span id="selBone">—</span>
+      <span class="k">dirty</span><span id="selDirty">—</span>
+    </div>
+    <div id="hint">拖拽移动 · 方向键微调（Shift ×10）· <b>[</b>/<b>]</b> 调层级 · Ctrl+Z 撤销 · 空格播放/暂停 · Shift+空格 平移 · 滚轮缩放</div>
+  </aside>
+</main>
+
+<script>
+"use strict";
+(() => {
+const cv = document.getElementById("cv");
+const ctx = cv.getContext("2d");
+const $ = id => document.getElementById(id);
+
+const state = {
+  skel: null, regions: {}, page: null,
+  slots: [], bones: {}, boneList: [],
+  sel: -1, zoom: 0.5, panX: 0, panY: 0,
+  dirty: false, undo: [],
+  anim: "", animDur: 0, t: 0, playing: false, speed: 1, loop: true, lastTs: 0,
+};
+
+/* ---------------- atlas ---------------- */
+function parseAtlas(text) {
+  const out = {}; let cur = null;
+  for (const raw of text.split(/\r?\n/)) {
+    const ln = raw.trim(); if (!ln) continue;
+    if (/^bounds:/.test(ln)) {
+      const [x, y, w, h] = ln.slice(7).split(",").map(Number);
+      if (cur) out[cur] = { x, y, w, h };
+      continue;
+    }
+    if (ln.startsWith("size:") || ln.startsWith("filter:") || ln.startsWith("repeat:") ||
+        ln.startsWith("format:") || /\.(png|webp)$/i.test(ln)) continue;
+    if (!ln.includes(":")) cur = ln;
+  }
+  return out;
+}
+
+/* ---------------- 载入 ---------------- */
+async function loadFiles(fileList) {
+  const by = {};
+  for (const f of fileList) by[f.name.split(".").pop().toLowerCase()] = f;
+  const j = by.json, a = by.atlas, p = by.png || by.webp;
+  if (!j || !a || !p) { setStatus("需要同时选择 .json + .atlas + .png", true); return; }
+  applyLoaded(JSON.parse(await j.text()), parseAtlas(await a.text()),
+              await loadImage(URL.createObjectURL(p)), j.name);
+}
+async function loadFromUrls(base) {
+  setStatus("载入中…");
+  const [skel, atlasText, page] = await Promise.all([
+    fetch(base + "/model.json").then(r => { if (!r.ok) throw new Error("model.json " + r.status); return r.json(); }),
+    fetch(base + "/model.atlas").then(r => r.text()),
+    loadImage(base + "/model.png"),
+  ]);
+  applyLoaded(skel, parseAtlas(atlasText), page, base);
+}
+function loadImage(src) {
+  return new Promise((res, rej) => {
+    const im = new Image(); im.onload = () => res(im);
+    im.onerror = () => rej(new Error("图片加载失败")); im.src = src;
+  });
+}
+
+function applyLoaded(skel, regions, page, label) {
+  state.skel = skel; state.regions = regions; state.page = page;
+  state.bones = {}; state.boneList = skel.bones || [];
+  for (const b of state.boneList) state.bones[b.name] = b;
+  const skin = (skel.skins && skel.skins[0]) || { attachments: {} };
+  state.slots = (skel.slots || []).map(sl => {
+    const bag = (skin.attachments && skin.attachments[sl.name]) || {};
+    return { name: sl.name, bone: sl.bone, attachment: sl.attachment, att: bag[sl.attachment] || {} };
+  });
+  state.sel = -1; state.dirty = false; state.undo = [];
+  state.anim = ""; state.t = 0; state.playing = false;
+
+  const names = Object.keys(skel.animations || {});
+  const sel = $("animSel");
+  sel.innerHTML = '<option value="">（无）</option>' + names.map(n => `<option value="${n}">${n}</option>`).join("");
+  sel.disabled = names.length === 0;
+  $("btnPlay").disabled = names.length === 0;
+  $("btnStop").disabled = true;
+  $("scrub").disabled = names.length === 0;
+  $("speedSel").disabled = names.length === 0;
+  ["btnSave", "btnReset", "showBounds", "showPivot"].forEach(id => $(id).disabled = false);
+  setStatus(`已载入 ${state.slots.length} 部件 / ${names.length} 动画 · ${label}`);
+  fitView(); renderList(); syncInputs(); updateTimeLabel(); render();
+}
+
+/* ---------------- 动画采样 ---------------- */
+const tlDur = tl => (tl && tl.length ? tl[tl.length - 1].time : 0);
+function sampleField(tl, t, field, def = 0) {
+  if (!tl || !tl.length) return def;
+  if (t <= tl[0].time) return tl[0][field] ?? def;
+  for (let i = 0; i < tl.length - 1; i++) {
+    const a = tl[i], b = tl[i + 1];
+    if (t >= a.time && t <= b.time) {
+      if (a.curve === "stepped") return a[field] ?? def;
+      const span = b.time - a.time;
+      const f = span <= 0 ? 0 : (t - a.time) / span;
+      const va = a[field] ?? def, vb = b[field] ?? def;
+      return va + (vb - va) * f;
+    }
+  }
+  return tl[tl.length - 1][field] ?? def;
+}
+function sampleAttachment(tl, t, def) {
+  if (!tl || !tl.length) return def;
+  let cur = def;
+  for (const k of tl) if (k.time <= t && k.name) cur = k.name;
+  return cur;
+}
+const animOf = name => (state.skel && state.skel.animations ? state.skel.animations[name] : null) || null;
+
+const matId = () => ({ a: 1, b: 0, c: 0, d: 1, tx: 0, ty: 0 });
+function matMul(m, n) {
+  return { a: m.a * n.a + m.c * n.b, b: m.b * n.a + m.d * n.b,
+           c: m.a * n.c + m.c * n.d, d: m.b * n.c + m.d * n.d,
+           tx: m.a * n.tx + m.c * n.ty + m.tx, ty: m.b * n.tx + m.d * n.ty + m.ty };
+}
+function boneWorld(name, anim, t, cache) {
+  if (cache[name]) return cache[name];
+  const b = state.bones[name] || { name };
+  const ab = anim && anim.bones && anim.bones[name];
+  let x = b.x || 0, y = b.y || 0, rot = b.rotation || 0;
+  let sx = b.scaleX ?? 1, sy = b.scaleY ?? 1;
+  if (ab) {
+    x += sampleField(ab.translate, t, "x");
+    y += sampleField(ab.translate, t, "y");
+    rot += sampleField(ab.rotate, t, "value");
+    sx *= sampleField(ab.scale, t, "x", 1);
+    sy *= sampleField(ab.scale, t, "y", 1);
+  }
+  const rad = rot * Math.PI / 180, cos = Math.cos(rad), sin = Math.sin(rad);
+  const local = { a: cos * sx, b: sin * sx, c: -sin * sy, d: cos * sy, tx: x, ty: y };
+  const parent = b.parent && state.bones[b.parent];
+  const world = parent ? matMul(boneWorld(b.parent, anim, t, cache), local) : local;
+  cache[name] = world;
+  return world;
+}
+
+/* ---------------- 视图 ---------------- */
+const viewW = () => cv.clientWidth, viewH = () => cv.clientHeight;
+function proj(wx, wy) { return { x: viewW() / 2 + state.panX + wx * state.zoom,
+                                y: viewH() / 2 - state.panY - wy * state.zoom }; }
+function unproj(sx, sy) { return { x: (sx - viewW() / 2 - state.panX) / state.zoom,
+                                   y: -(sy - viewH() / 2 + state.panY) / state.zoom }; }
+function setupBox(i) {
+  const sl = state.slots[i], b = state.bones[sl.bone] || {};
+  const w = sl.att.width || 0, h = sl.att.height || 0;
+  const cx = (b.x || 0) + (sl.att.x || 0), cy = (b.y || 0) + (sl.att.y || 0);
+  return { x0: cx - w / 2, y0: cy - h / 2, x1: cx + w / 2, y1: cy + h / 2 };
+}
+function fitView() {
+  if (!state.slots.length) return;
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  state.slots.forEach((_, i) => {
+    const b = setupBox(i);
+    x0 = Math.min(x0, b.x0); x1 = Math.max(x1, b.x1);
+    y0 = Math.min(y0, b.y0); y1 = Math.max(y1, b.y1);
+  });
+  const z = Math.min(viewW() / (x1 - x0 + 60), viewH() / (y1 - y0 + 60));
+  state.zoom = z;
+  state.panX = -((x0 + x1) / 2) * z;
+  state.panY = -((y0 + y1) / 2) * z;
+  $("zoomLabel").textContent = (z * 100).toFixed(0) + "%";
+}
+
+/* ---------------- 绘制 ---------------- */
+function currentPose() {
+  const anim = state.anim ? animOf(state.anim) : null;
+  const attOverride = {};
+  if (anim && anim.slots) {
+    for (const [slotName, tl] of Object.entries(anim.slots)) {
+      if (tl.attachment) {
+        const cur = state.slots.find(s => s.name === slotName);
+        attOverride[slotName] = sampleAttachment(tl.attachment, state.t, cur ? cur.attachment : undefined);
+      }
+    }
+  }
+  return { anim, t: state.t, cache: {}, attOverride };
+}
+function render() {
+  const dpr = devicePixelRatio || 1;
+  const W = Math.round(cv.clientWidth * dpr), H = Math.round(cv.clientHeight * dpr);
+  if (cv.width !== W || cv.height !== H) { cv.width = W; cv.height = H; }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cv.clientWidth, cv.clientHeight);
+  if (!state.slots.length || !state.page) return;
+
+  const pose = currentPose();
+  const showB = $("showBounds").checked, showP = $("showPivot").checked;
+  const skin = (state.skel.skins && state.skel.skins[0]) || { attachments: {} };
+
+  for (let i = 0; i < state.slots.length; i++) {
+    const sl = state.slots[i];
+    const attName = pose.attOverride[sl.name] || sl.attachment;
+    const reg = state.regions[attName];
+    if (!reg) continue;
+    const bag = (skin.attachments && skin.attachments[sl.name]) || {};
+    const att = bag[attName] || sl.att;
+    const w = att.width || reg.w, h = att.height || reg.h;
+
+    const bw = boneWorld(sl.bone, pose.anim, pose.t, pose.cache);
+    const off = matMul(bw, { a: 1, b: 0, c: 0, d: 1, tx: att.x || 0, ty: att.y || 0 });
+    const hw = w / 2, hh = h / 2;
+    const corners = [[-hw, hh], [hw, hh], [hw, -hh], [-hw, -hh]].map(([lx, ly]) => {
+      const wx = off.a * lx + off.c * ly + off.tx;
+      const wy = off.b * lx + off.d * ly + off.ty;
+      return proj(wx, wy);
+    });
+
+    const sx2 = Math.hypot(off.a, off.b), sy2 = Math.hypot(off.c, off.d);
+    const rot = Math.atan2(off.b, off.a);
+    const c0 = proj(off.tx, off.ty);
+    ctx.save();
+    ctx.translate(c0.x, c0.y);
+    ctx.rotate(rot);
+    ctx.scale(sx2 * state.zoom, sy2 * state.zoom);
+    ctx.drawImage(state.page, reg.x, reg.y, reg.w, reg.h, -hw, -hh, w, h);
+    ctx.restore();
+
+    if (i === state.sel || showB) {
+      ctx.beginPath();
+      corners.forEach((p, k) => k ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
+      ctx.closePath();
+      ctx.lineWidth = i === state.sel ? 2 : 1;
+      ctx.strokeStyle = i === state.sel ? "#5aa9ff" : "rgba(255,255,255,.18)";
+      ctx.stroke();
+    }
+    if (showP && i === state.sel) {
+      const pv = proj(off.tx, off.ty);
+      ctx.strokeStyle = "#f0b429"; ctx.lineWidth = 1.5; ctx.beginPath();
+      ctx.moveTo(pv.x - 7, pv.y); ctx.lineTo(pv.x + 7, pv.y);
+      ctx.moveTo(pv.x, pv.y - 7); ctx.lineTo(pv.x, pv.y + 7); ctx.stroke();
+    }
+  }
+}
+
+/* ---------------- 播放控制 ---------------- */
+function animDuration(name) {
+  const anim = animOf(name); if (!anim) return 0;
+  let d = 0;
+  for (const tl of Object.values(anim.bones || {}))
+    for (const track of Object.values(tl)) d = Math.max(d, tlDur(track));
+  for (const tl of Object.values(anim.slots || {}))
+    for (const track of Object.values(tl)) d = Math.max(d, tlDur(track));
+  return d;
+}
+function updateTimeLabel() {
+  $("timeLabel").textContent = `${state.t.toFixed(2)}s / ${state.animDur.toFixed(2)}s`;
+  if (state.animDur > 0) $("scrub").value = Math.round(1000 * state.t / state.animDur);
+}
+function setAnim(name) {
+  state.anim = name;
+  state.animDur = animDuration(name);
+  state.t = 0; state.playing = false;
+  $("btnPlay").textContent = "▶ 播放"; $("btnPlay").classList.remove("on");
+  $("btnStop").disabled = !name;
+  updateTimeLabel(); render();
+}
+function togglePlay() {
+  if (!state.anim) { setStatus("先选一个动画", true); return; }
+  state.playing = !state.playing;
+  $("btnPlay").textContent = state.playing ? "⏸ 暂停" : "▶ 播放";
+  $("btnPlay").classList.toggle("on", state.playing);
+  if (state.playing) {
+    if (state.t >= state.animDur) state.t = 0;
+    state.lastTs = 0;
+    requestAnimationFrame(tick);
+  }
+}
+function tick(ts) {
+  if (!state.playing) return;
+  if (!state.lastTs) state.lastTs = ts;
+  const dt = Math.min(0.1, (ts - state.lastTs) / 1000) * state.speed;
+  state.lastTs = ts;
+  state.t += dt;
+  if (state.t >= state.animDur) {
+    if (state.loop && state.animDur > 0) state.t %= state.animDur;
+    else {
+      state.t = state.animDur; state.playing = false;
+      $("btnPlay").textContent = "▶ 播放"; $("btnPlay").classList.remove("on");
+    }
+  }
+  updateTimeLabel(); render();
+  if (state.playing) requestAnimationFrame(tick);
+}
+
+/* ---------------- 列表 / 选择 ---------------- */
+function renderList() {
+  const box = $("list"); box.innerHTML = "";
+  for (let i = state.slots.length - 1; i >= 0; i--) {
+    const sl = state.slots[i];
+    const el = document.createElement("div");
+    el.className = "item" + (i === state.sel ? " sel" : "");
+    el.innerHTML = `<span class="z">${i}</span><span class="nm">${sl.attachment}</span>
+      <span class="mv">
+        <button data-a="top" title="置顶">⤒</button>
+        <button data-a="up" title="上移">↑</button>
+        <button data-a="down" title="下移">↓</button>
+        <button data-a="bottom" title="置底">⤓</button>
+      </span>`;
+    el.addEventListener("click", e => { if (e.target.tagName !== "BUTTON") select(i); });
+    el.querySelectorAll("button").forEach(btn =>
+      btn.addEventListener("click", e => { e.stopPropagation(); moveZ(i, btn.dataset.a); }));
+    box.appendChild(el);
+  }
+}
+function select(i) { state.sel = i; renderList(); render(); syncInputs(); }
+function syncInputs() {
+  const ok = state.sel >= 0 && state.slots[state.sel];
+  $("posX").disabled = !ok; $("posY").disabled = !ok;
+  $("selName").textContent = ok ? state.slots[state.sel].attachment : "—";
+  $("selBone").textContent = ok ? state.slots[state.sel].bone : "—";
+  $("selDirty").textContent = state.dirty ? "是" : "否";
+  if (ok) {
+    const b = state.bones[state.slots[state.sel].bone] || {};
+    $("posX").value = +(b.x || 0).toFixed(1);
+    $("posY").value = +(b.y || 0).toFixed(1);
+  }
+}
+
+/* ---------------- 编辑 ---------------- */
+function snapshot() {
+  return JSON.stringify({
+    bones: Object.keys(state.bones).map(k => [k, state.bones[k].x || 0, state.bones[k].y || 0]),
+    order: state.slots.map(s => s.name),
+  });
+}
+function pushUndo() { state.undo.push(snapshot()); if (state.undo.length > 120) state.undo.shift(); $("btnUndo").disabled = false; }
+function applySnapshot(str) {
+  const snap = JSON.parse(str);
+  for (const [k, x, y] of snap.bones) if (state.bones[k]) { state.bones[k].x = x; state.bones[k].y = y; }
+  const by = Object.fromEntries(state.slots.map(s => [s.name, s]));
+  state.slots = snap.order.map(n => by[n]).filter(Boolean);
+}
+function undo() {
+  if (!state.undo.length) return;
+  applySnapshot(state.undo.pop());
+  state.dirty = true;
+  $("btnUndo").disabled = state.undo.length === 0;
+  renderList(); render(); syncInputs();
+}
+function moveZ(i, action) {
+  pushUndo();
+  const arr = state.slots, pos = i;
+  let target = pos;
+  if (action === "up") target = Math.min(arr.length - 1, pos + 1);
+  if (action === "down") target = Math.max(0, pos - 1);
+  if (action === "top") target = arr.length - 1;
+  if (action === "bottom") target = 0;
+  if (target === pos) return;
+  const [it] = arr.splice(pos, 1); arr.splice(target, 0, it);
+  state.sel = target; state.dirty = true;
+  renderList(); render(); syncInputs();
+}
+function moveBone(name, dx, dy) {
+  const b = state.bones[name]; if (!b) return;
+  b.x = +(b.x || 0) + dx; b.y = +(b.y || 0) + dy;
+}
+
+/* ---------------- 交互 ---------------- */
+let drag = null, spaceDown = false;
+function hitTest(p, pose) {
+  for (let i = state.slots.length - 1; i >= 0; i--) {
+    const sl = state.slots[i];
+    const bw = boneWorld(sl.bone, pose.anim, pose.t, pose.cache);
+    const off = matMul(bw, { a: 1, b: 0, c: 0, d: 1, tx: sl.att.x || 0, ty: sl.att.y || 0 });
+    const lx = p.x - off.tx, ly = p.y - off.ty;
+    const det = off.a * off.d - off.b * off.c || 1e-6;
+    const ux = (off.d * lx - off.c * ly) / det;
+    const uy = (-off.b * lx + off.a * ly) / det;
+    if (Math.abs(ux) <= (sl.att.width || 0) / 2 && Math.abs(uy) <= (sl.att.height || 0) / 2) return i;
+  }
+  return -1;
+}
+cv.addEventListener("pointerdown", e => {
+  if (!state.slots.length) return;
+  if (spaceDown || e.button === 1) {
+    drag = { mode: "pan", sx: e.clientX, sy: e.clientY, panX: state.panX, panY: state.panY };
+    cv.style.cursor = "grabbing"; cv.setPointerCapture(e.pointerId); return;
+  }
+  if (state.playing) { state.playing = false; $("btnPlay").textContent = "▶ 播放"; $("btnPlay").classList.remove("on"); }
+  const p = unproj(e.offsetX, e.offsetY);
+  const hit = hitTest(p, currentPose());
+  if (hit >= 0) {
+    select(hit); pushUndo();
+    drag = { mode: "move", start: p, bone: state.slots[hit].bone };
+    cv.style.cursor = "move"; cv.setPointerCapture(e.pointerId);
+  } else select(-1);
+});
+cv.addEventListener("pointermove", e => {
+  if (!drag) return;
+  if (drag.mode === "pan") {
+    state.panX = drag.panX + (e.clientX - drag.sx);
+    state.panY = drag.panY + (e.clientY - drag.sy);
+    render(); return;
+  }
+  const p = unproj(e.offsetX, e.offsetY);
+  moveBone(drag.bone, p.x - drag.start.x, p.y - drag.start.y);
+  drag.start = p; state.dirty = true;
+  render(); syncInputs(); renderList();
+});
+cv.addEventListener("pointerup", e => {
+  drag = null; cv.style.cursor = "default";
+  try { cv.releasePointerCapture(e.pointerId); } catch (_) {}
+});
+cv.addEventListener("wheel", e => {
+  e.preventDefault();
+  const before = unproj(e.offsetX, e.offsetY);
+  state.zoom = Math.max(0.05, Math.min(8, state.zoom * (e.deltaY < 0 ? 1.12 : 1 / 1.12)));
+  const after = unproj(e.offsetX, e.offsetY);
+  state.panX += (after.x - before.x) * state.zoom;
+  state.panY -= (after.y - before.y) * state.zoom;
+  $("zoomLabel").textContent = (state.zoom * 100).toFixed(0) + "%";
+  render();
+}, { passive: false });
+
+window.addEventListener("keydown", e => {
+  if (e.code === "Space") { spaceDown = true; if (!e.repeat) { e.preventDefault(); togglePlay(); } }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); undo(); return; }
+  if (state.sel < 0) return;
+  const step = e.shiftKey ? 10 : 1;
+  const bone = state.slots[state.sel].bone;
+  const map = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, step], ArrowDown: [0, -step] };
+  if (map[e.key]) {
+    e.preventDefault(); pushUndo(); moveBone(bone, map[e.key][0], map[e.key][1]);
+    state.dirty = true; render(); syncInputs(); return;
+  }
+  if (e.key === "[") { e.preventDefault(); moveZ(state.sel, "down"); }
+  if (e.key === "]") { e.preventDefault(); moveZ(state.sel, "up"); }
+});
+window.addEventListener("keyup", e => { if (e.code === "Space") spaceDown = false; });
+
+/* ---------------- 保存 ---------------- */
+const round = v => Math.round(v * 100) / 100;
+function save() {
+  if (!state.skel) return;
+  state.skel.bones = (state.skel.bones || []).map(b => {
+    const nb = state.bones[b.name];
+    return nb ? { ...b, x: round(nb.x || 0), y: round(nb.y || 0) } : b;
+  });
+  state.skel.slots = state.slots.map(s => ({ name: s.name, bone: s.bone, attachment: s.attachment }));
+  const blob = new Blob([JSON.stringify(state.skel, null, 1)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = "model.json"; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  state.dirty = false; syncInputs();
+  setStatus("已导出 model.json（覆盖 assets/characters/deepseek/spine/model.json 后重跑打包）");
+}
+
+/* ---------------- UI 绑定 ---------------- */
+function setStatus(msg, warn) {
+  const el = $("status"); el.textContent = msg;
+  el.style.color = warn ? "#f0b429" : "#8b98ad";
+}
+$("btnLoad").onclick = () => $("files").click();
+$("files").onchange = e => loadFiles([...e.target.files]).catch(err => setStatus("载入失败：" + err.message, true));
+$("btnSample").onclick = () => loadFromUrls("../../assets/characters/deepseek/spine")
+  .catch(err => setStatus("载入示例失败（请用 http 服务打开本页）：" + err.message, true));
+$("btnSave").onclick = save;
+$("btnUndo").onclick = undo;
+$("btnReset").onclick = () => { while (state.undo.length) undo(); };
+$("btnFit").onclick = () => { fitView(); render(); };
+$("showBounds").onchange = render;
+$("showPivot").onchange = render;
+$("animSel").onchange = e => setAnim(e.target.value);
+$("btnPlay").onclick = togglePlay;
+$("btnStop").onclick = () => {
+  state.playing = false; state.t = 0;
+  $("btnPlay").textContent = "▶ 播放"; $("btnPlay").classList.remove("on");
+  updateTimeLabel(); render();
+};
+$("loopChk").onchange = e => state.loop = e.target.checked;
+$("speedSel").onchange = e => state.speed = parseFloat(e.target.value);
+$("scrub").oninput = e => {
+  if (!state.animDur) return;
+  state.playing = false;
+  $("btnPlay").textContent = "▶ 播放"; $("btnPlay").classList.remove("on");
+  state.t = state.animDur * (Number(e.target.value) / 1000);
+  updateTimeLabel(); render();
+};
+$("posX").onchange = () => nudge("x", parseFloat($("posX").value));
+$("posY").onchange = () => nudge("y", parseFloat($("posY").value));
+function nudge(axis, val) {
+  if (state.sel < 0 || isNaN(val)) return;
+  const b = state.bones[state.slots[state.sel].bone]; if (!b) return;
+  pushUndo(); b[axis] = val; state.dirty = true;
+  render(); renderList(); syncInputs();
+}
+new ResizeObserver(() => render()).observe($("stage"));
+updateTimeLabel();
+render();
+})();
+</script>
+</body>
+</html>
