@@ -23,6 +23,22 @@ from scipy import ndimage
 
 MIN_AREA_RATIO = 0.0008  # 小于整图的 0.08% 视为噪点
 
+# 轴心（关节）位置：相对部件 bbox 的比例，原点左上、y 向下。
+# 不配的在部件中心——那会让肢体绕自身中心转，看起来"散架"，所以默认都给关节。
+PIVOTS = {
+    "head":      (0.50, 0.98),   # 颈
+    "body":      (0.50, 0.98),   # 站姿脚底
+    "leg":       (0.50, 0.02),   # 胯
+    "arm-l":     (0.50, 0.06),   # 肩
+    "arm-r":     (0.50, 0.06),
+    "ahoge":     (0.50, 0.98),   # 呆毛根部（贴头顶）
+    "tail":      (0.04, 0.30),   # 尾根
+    "hair-side": (0.50, 0.05),   # 发根
+    "hair-back": (0.50, 0.05),
+    "headband":  (0.50, 0.60),
+    "bow":       (0.50, 0.35),
+}
+
 
 def key_green(rgb):
     r, g, b = [rgb[..., i].astype(np.int16) for i in range(3)]
@@ -118,6 +134,45 @@ def cut_parts(rgb, alpha, min_area):
     return parts
 
 
+TIGHTEN_TARGET = {
+    "arm-l": "body", "arm-r": "body", "leg": "body", "tail": "body",
+    "ahoge": "head", "hair-side": "head", "bow": "head",
+}
+
+
+def tighten_by_mask(parts, overlap=3.0, verbose=True):
+    """按「mask 最近距离」把肢体拉向目标部件，补掉拆件图人为留出的缝。
+
+    与 bbox 法相比，这里量的是真实轮廓间距：取肢体 mask 上离目标 mask 最近的点，
+    沿该方向平移 gap+overlap 像素，使两部件轮廓重叠 overlap 像素。
+    """
+    by = {p["name"]: p for p in parts}
+    for name, target in TIGHTEN_TARGET.items():
+        p, t = by.get(name), by.get(target)
+        if not p or not t:
+            continue
+        dist, (iy, ix) = ndimage.distance_transform_edt(~t["mask"], return_indices=True)
+        ys, xs = np.where(p["mask"])
+        if not len(ys):
+            continue
+        d = dist[ys, xs]
+        k = int(np.argmin(d))
+        gap = float(d[k])
+        py, px = ys[k], xs[k]
+        ty, tx = iy[py, px], ix[py, px]
+        dy, dx = ty - py, tx - px
+        norm = max(1e-6, (dx * dx + dy * dy) ** 0.5)
+        dx, dy = dx / norm, dy / norm
+        shift_x, shift_y = dx * (gap + overlap), dy * (gap + overlap)
+        p["mask"] = np.roll(np.roll(p["mask"], int(round(shift_y)), axis=0),
+                            int(round(shift_x)), axis=1)
+        x0, y0, x1, y1 = p["box"]
+        p["box"] = (x0 + shift_x, y0 + shift_y, x1 + shift_x, y1 + shift_y)
+        if verbose:
+            print(f"    合缝 {name} → {target}: gap={gap:.1f}px  shift=({shift_x:.1f},{shift_y:.1f})")
+    return parts
+
+
 def build_skeleton(name, placements, canvas_w, canvas_h):
     """placements: [{name,w,h,cx,cy}]，cx/cy 为画布坐标（y 向下）。"""
     feet_y = max(p["cy"] + p["h"] / 2 for p in placements)
@@ -125,14 +180,20 @@ def build_skeleton(name, placements, canvas_w, canvas_h):
     slots, att_by_slot = [], {}
     for p in placements:
         bone = f"b_{p['name']}"
+        px = p.get("px", p["cx"]); py = p.get("py", p["cy"])
         bones.append({
             "name": bone, "parent": "root",
-            "x": round(p["cx"] - canvas_w / 2, 2),
-            "y": round(feet_y - p["cy"], 2),
+            "x": round(px - canvas_w / 2, 2),
+            "y": round(feet_y - py, 2),
         })
         slots.append({"name": f"s_{p['name']}", "bone": bone, "attachment": p["name"]})
+        px = p.get("px", p["cx"]); py = p.get("py", p["cy"])
+        # 轴心在部件内的位置（y 向上换算）：附件中心相对骨骼原点的偏移
+        off_x = p["w"] / 2 - (px - (p["cx"] - p["w"] / 2))
+        off_y = (py - (p["cy"] - p["h"] / 2)) - p["h"] / 2
         att_by_slot[f"s_{p['name']}"] = {
-            p["name"]: {"x": 0, "y": 0, "width": p["w"], "height": p["h"]}
+            p["name"]: {"x": round(off_x, 2), "y": round(off_y, 2),
+                        "width": p["w"], "height": p["h"]}
         }
 
     present = {p["name"] for p in placements}
@@ -146,11 +207,11 @@ def build_skeleton(name, placements, canvas_w, canvas_h):
 
     # 每个状态：整体节奏 + 各部件幅度（度 / 像素）
     STATES = {
-        "idle":      dict(dur=2.4, bob=6,  body=0.9, ahoge=7,  tail=5,  arm=3,  head=1.5, hair=2.0),
-        "working":   dict(dur=1.2, bob=16, body=2.0, ahoge=13, tail=11, arm=9,  head=3.0, hair=4.0),
-        "attention": dict(dur=0.9, bob=10, body=3.0, ahoge=18, tail=14, arm=14, head=5.0, hair=6.0),
-        "done":      dict(dur=1.2, bob=22, body=2.5, ahoge=16, tail=16, arm=16, head=4.0, hair=5.0),
-        "failed":    dict(dur=3.0, bob=3,  body=1.0, ahoge=4,  tail=3,  arm=2,  head=2.0, hair=1.0),
+        "idle":      dict(dur=2.4, bob=5,  body=0.8, ahoge=5,  tail=4,  arm=2,  head=1.2, hair=1.5),
+        "working":   dict(dur=1.2, bob=12, body=1.5, ahoge=9,  tail=8,  arm=5,  head=2.5, hair=3.0),
+        "attention": dict(dur=0.9, bob=8,  body=2.0, ahoge=12, tail=10, arm=8,  head=3.5, hair=4.0),
+        "done":      dict(dur=1.2, bob=18, body=2.0, ahoge=11, tail=11, arm=9,  head=3.0, hair=3.5),
+        "failed":    dict(dur=3.0, bob=2,  body=0.8, ahoge=3,  tail=2,  arm=1.5, head=2.0, hair=0.8),
     }
     # 相位错开，避免所有部件同步摆动（那样像纸片整体抖）
     PHASE = {"ahoge": 0.12, "tail": 0.25, "arm-l": 0.0, "arm-r": 0.5,
@@ -214,6 +275,7 @@ def main():
     ap.add_argument("--layout", choices=("inplace", "center"), default="inplace",
                     help="inplace=部件保持 sheet 上的原始位置（要求拆件图原位分离）；"
                          "center=全部居中堆叠（格子排布的 sheet 只能这样凑合）")
+    ap.add_argument("--no-tighten", action="store_true", help="不做肢体合缝（保留拆件图原始间距）")
     ap.add_argument("--draw-order", default=None,
                     help="逗号分隔的层名，指定 back→front 的绘制顺序（未列出的按原顺序追加）")
     a = ap.parse_args()
@@ -233,19 +295,26 @@ def main():
     names = a.names.split(",") if a.names else None
     if names and len(names) != len(parts):
         raise SystemExit(f"--names 给了 {len(names)} 个名字，但切出 {len(parts)} 个部件")
+    for i, p in enumerate(parts):
+        p["name"] = names[i] if names else f"part_{i:02d}"
+
+    if not a.no_tighten:
+        parts = tighten_by_mask(parts)
 
     os.makedirs(os.path.join(a.out, "images"), exist_ok=True)
     placements = []
     for i, p in enumerate(parts):
-        x0, y0, x1, y1 = p["box"]
+        x0, y0, x1, y1 = [int(round(v)) for v in p["box"]]
         w, h = x1 - x0, y1 - y0
         layer = np.zeros((h, w, 4), np.uint8)
         layer[..., :3] = rgb2[y0:y1, x0:x1]
         layer[..., 3] = alpha[y0:y1, x0:x1] * p["mask"][y0:y1, x0:x1]
-        part_name = names[i] if names else f"part_{i:02d}"
+        part_name = p["name"]
         Image.fromarray(layer, "RGBA").save(os.path.join(a.out, "images", f"{part_name}.png"))
+        pv = PIVOTS.get(part_name, (0.5, 0.5))
         placements.append({"name": part_name, "w": w, "h": h,
-                           "cx": (x0 + x1) / 2, "cy": (y0 + y1) / 2})
+                           "cx": (x0 + x1) / 2, "cy": (y0 + y1) / 2,
+                           "px": x0 + pv[0] * w, "py": y0 + pv[1] * h})
         print(f"  {part_name}: {w}x{h}  面积 {p['area']}")
 
     if a.layout == "center":
@@ -264,6 +333,14 @@ def main():
             raise SystemExit(f"--draw-order 里有未知层名: {unknown}")
         placements = [by_name[n] for n in want] + [p for p in placements if p["name"] not in want]
         print("绘制顺序：" + " → ".join(p["name"] for p in placements))
+
+
+    feet_sheet = max(pl["cy"] + pl["h"] / 2 for pl in placements)
+    with open(os.path.join(a.out, "layout.json"), "w", encoding="utf-8") as f:
+        json.dump({"canvas": [canvas_w, canvas_h], "feetSheetY": round(feet_sheet, 2),
+                   "parts": [{k: round(v, 2) if isinstance(v, float) else v
+                              for k, v in pl.items()} for pl in placements]},
+                  f, ensure_ascii=False, indent=1)
 
     skel = build_skeleton(a.name, placements, canvas_w, canvas_h)
     path = os.path.join(a.out, f"{a.name}.json")
