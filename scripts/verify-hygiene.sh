@@ -111,6 +111,10 @@ for f in "${files[@]}"; do
           block "$f" "非默认角色包不入库：仅 deepseek 随包发布，其余角色从 GitHub Releases 按需下载（运行时落在 ~/.dsh/pets/characters/）"
           continue ;;
       esac ;;
+    # --- 规则 3c：项目技能仅本地 ---
+    .agents/*)
+      block "$f" "项目技能目录（.agents/）仅本地使用，不上传远端；需要对外分享请写脱敏版进 docs/"
+      continue ;;
     # --- 规则 4：凭据与本地配置 ---
     *.pem|*.key|*.p12|*.pfx|secrets.json|local.config.json)
       block "$f" "凭据类文件严禁入库"; continue ;;

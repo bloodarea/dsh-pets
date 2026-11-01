@@ -20,6 +20,7 @@
 | **`docs/**`（文档、设计稿、调研笔记、PDF/Office 文件）** | ❌ | 内部文档只在本地保存 |
 | **`docs/assets/*.png` 等图片** | ✅ | README 需要引用的图片与截图（**唯一例外**） |
 | **`references/`** | ❌ | 参考项目源码、技术实验、验证脚本、抓包与实验数据 |
+| **`.agents/`**（项目技能） | ❌ | 仅本地：DSH 从 `.agents/skills/<name>/SKILL.md` 发现技能 |
 | `experiments/` `playground/` `sandbox/` | ❌ | 一次性技术验证，同上 |
 | `node_modules/` `dist/` `build/` `out/` `coverage/` | ❌ | 依赖与构建产物，可由安装/构建重建 |
 | `.env*` `*.pem` `*.key` `secrets.json` | ❌ | 凭据与本地配置，一经泄露不可回滚 |
@@ -82,7 +83,26 @@
 
 确需引用第三方代码时的做法：**要么重写，要么只取最小片段 + 在 `THIRD-PARTY-NOTICES.md` 记录出处、许可证与改动**；第三方依赖一律走 `package.json`，不要 vendored 拷贝。
 
-## 5. 提交前自检
+## 5. `.agents/`：项目技能（仅本地）
+
+`<projectRoot>/.agents/skills` 是 DSH 的项目级技能发现路径（来源 `project-agents`，rank 200）：
+每个技能一个目录，内含 `SKILL.md`（或以 `<name>.md` 扁平文件形式），只扫描直接子项，
+不支持嵌套 `**/SKILL.md`；frontmatter 必填 `name` 与 `description`。
+
+```text
+.agents/
+├── README.md            # 约定说明（本地）
+└── skills/
+    └── <skill-name>/
+        └── SKILL.md
+```
+
+- **整个 `.agents/` 不入库**：技能常含本机路径、内部约定与未公开做法，属于工作资产；
+- 需要对外分享的技能，另写脱敏版放进 `docs/`（本地）或直接写进 `README.md`；
+- 不要在 `.agents/skills/` 下放 `README.md`——它会被当成扁平 skill 扫描，缺 frontmatter 会告警；
+- 更高优先级的 `<projectRoot>/.dsh/skills`（rank 100）已被 `.dsh/` 规则覆盖，同样只在本机。
+
+## 6. 提交前自检
 
 ```bash
 # 每个克隆执行一次，装 pre-commit 钩子
@@ -106,7 +126,7 @@ git commit --amend --no-edit        # 若已提交但未推送
 
 `--no-verify` 只允许在确认误判时使用，且必须在 PR / 提交说明里写明原因，否则视为违规。
 
-## 6. 修改规则的流程
+## 7. 修改规则的流程
 
 1. 同时改 `.gitignore` 与 `scripts/verify-hygiene.sh`（二者是同一规则的两份表述：前者防误加，后者防强推）；
 2. 在本文件补齐说明与理由；

@@ -81,3 +81,8 @@ local.config.json
 /assets/characters/*
 !/assets/characters/deepseek/
 !/assets/characters/index.json
+
+# --- 8. 项目技能：仅本地使用，不上传远端 ----------------------------------
+# DSH 在 <projectRoot>/.agents/skills 发现项目级技能（每技能一个目录含 SKILL.md）。
+# 里面常含本机路径与内部工作流，属于工作资产，故整体忽略。
+.agents/
