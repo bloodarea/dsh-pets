@@ -1,0 +1,42 @@
+# ===========================================================================
+# 换行统一：仓库内一律 LF，检出行为一致，避免整文件 diff 噪音
+# ===========================================================================
+* text=auto eol=lf
+
+# --- 脚本：按各自平台约定换行 ---------------------------------------------
+*.sh   text eol=lf
+*.bash text eol=lf
+*.ps1  text eol=crlf
+*.cmd  text eol=crlf
+*.bat  text eol=crlf
+
+# --- 二进制：禁止文本转换与 diff ------------------------------------------
+*.png        binary
+*.jpg        binary
+*.jpeg       binary
+*.gif        binary
+*.webp       binary
+*.avif       binary
+*.ico        binary
+*.wav        binary
+*.mp3        binary
+*.ogg        binary
+*.woff       binary
+*.woff2      binary
+*.ttf        binary
+*.otf        binary
+# Live2D 运行时资源
+*.moc3       binary
+*.model3.json text eol=lf
+*.motion3.json text eol=lf
+*.physics3.json text eol=lf
+
+# --- 生成物：折叠 diff、标注来源 ------------------------------------------
+*.lock       linguist-generated
+pnpm-lock.yaml linguist-generated
+
+# --- 语言统计守门（即便规则被绕过强行入库，也不污染统计） ------------------
+references/**   linguist-vendored
+reference/**    linguist-vendored
+experiments/**  linguist-vendored
+docs/**         linguist-documentation
