@@ -65,6 +65,12 @@
             <circle cx="8" cy="8" r="1.5"/>`,
     move: `<path d="M8 2v12M2 8h12"/>
            <path d="M6.2 3.8 8 2l1.8 1.8M6.2 12.2 8 14l1.8-1.8M3.8 6.2 2 8l1.8 1.8M12.2 6.2 14 8l-1.8 1.8"/>`,
+    weight: `<circle cx="8" cy="8" r="5.7"/><path d="M8 2.3a5.7 5.7 0 0 0 0 11.4z" fill="currentColor" stroke="none"/>`,
+    face: `<circle cx="8" cy="8" r="5.8"/><path d="M5.3 9.5a3.2 3.2 0 0 0 5.4 0"/>
+           <circle cx="6.1" cy="6.3" r=".62" fill="currentColor" stroke="none"/>
+           <circle cx="9.9" cy="6.3" r=".62" fill="currentColor" stroke="none"/>`,
+    texture: `<rect x="2.2" y="2.2" width="11.6" height="11.6" rx="1.3"/>
+              <path d="M2.2 6.4 13.8 6.4M2.2 9.8 13.8 9.8M6.4 2.2v11.6M9.8 2.2v11.6"/>`,
     trash: `<path d="M3.2 5.1h9.6"/><path d="M6.4 5.1V3.7a.9.9 0 0 1 .9-.9h1.4a.9.9 0 0 1 .9.9v1.4"/>
             <path d="M4.6 5.1 5.3 13a.9.9 0 0 0 .9.8h3.6a.9.9 0 0 0 .9-.8l.7-7.9"/>`,
   };

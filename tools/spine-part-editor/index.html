@@ -60,6 +60,24 @@
   button .ic{width:13px;height:13px;margin-right:3px}
   .item .mv button .ic,.item .eye .ic{margin:0;width:12.5px;height:12.5px}
   label .ic{width:13px;height:13px;margin-right:2px;stroke:var(--dim)}
+  /* 模式切换 */
+  .modes{display:flex;gap:2px;background:#11141c;border:1px solid var(--line);border-radius:6px;padding:2px}
+  .modes button{border:0;background:transparent;padding:3px 9px;border-radius:4px;color:var(--dim)}
+  .modes button:hover:not(:disabled){background:#1d2432;color:var(--fg)}
+  .modes button.on{background:#1f4f86;color:#fff}
+  .modes button.on .ic{stroke:#fff}
+  /* 侧栏面板 */
+  .panel{padding:8px 10px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:6px;font-size:12px}
+  .panel .ttl{color:var(--dim);font-size:11px;letter-spacing:.06em;text-transform:uppercase}
+  .row{display:flex;align-items:center;gap:6px}
+  .row>span.k{width:42px;color:var(--dim);flex:none}
+  .row input[type=range]{flex:1;width:auto;min-width:0}
+  .row .val{width:38px;text-align:right;color:var(--fg);font-variant-numeric:tabular-nums}
+  .presets{display:flex;gap:4px;flex-wrap:wrap}
+  .presets button{padding:2px 7px;font-size:11.5px}
+  .note{color:var(--dim);font-size:11.5px;line-height:1.45}
+  #legend{display:flex;gap:8px;align-items:center;font-size:11.5px;color:var(--dim)}
+  #legend i{width:10px;height:10px;border-radius:2px;display:inline-block;margin-right:3px;vertical-align:-1px}
 </style>
 </head>
 <body>
@@ -68,6 +86,15 @@
     <button id="btnLoad" class="primary"><svg class="ic"><use href="#i-open"></use></svg>载入文件…</button>
     <button id="btnSample"><svg class="ic"><use href="#i-sample"></use></svg>载入仓库示例</button>
     <input id="files" type="file" multiple accept=".json,.atlas,.png,.webp" hidden>
+  </div>
+  <div class="grp">
+    <div class="modes" id="modeBar">
+      <button data-mode="texture" class="on"><svg class="ic"><use href="#i-texture"></use></svg>贴图</button>
+      <button data-mode="bones"><svg class="ic"><use href="#i-bone"></use></svg>骨骼</button>
+      <button data-mode="weights"><svg class="ic"><use href="#i-weight"></use></svg>权重</button>
+      <button data-mode="expr"><svg class="ic"><use href="#i-face"></use></svg>表情</button>
+      <button data-mode="mesh"><svg class="ic"><use href="#i-mesh"></use></svg>网格</button>
+    </div>
   </div>
   <div class="grp">
     <button id="btnSave" disabled><svg class="ic"><use href="#i-save"></use></svg>保存 JSON</button>
@@ -108,6 +135,33 @@
 <main>
   <div id="stage"><canvas id="cv"></canvas></div>
   <aside>
+    <div class="panel" id="bonesPanel" style="display:none">
+      <div class="ttl">骨骼（FK / IK）</div>
+      <div id="boneLegend" style="display:flex;gap:10px;font-size:11.5px;color:var(--dim)"></div>
+      <div class="note" id="boneNote">—</div>
+    </div>
+    <div class="panel" id="exprPanel" style="display:none">
+      <div class="ttl">表情参数（仅调试，不写回）</div>
+      <div class="row"><span class="k">眨眼</span><input id="exBlink" type="range" min="0" max="1" step="0.01" value="0"><span class="val" id="exBlinkV">0.00</span></div>
+      <div class="row"><span class="k">口型</span><input id="exMouth" type="range" min="0" max="4" step="1" value="0"><span class="val" id="exMouthV">0</span></div>
+      <div class="row"><span class="k">眉毛</span><input id="exBrow" type="range" min="-1" max="1" step="0.5" value="0"><span class="val" id="exBrowV">0</span></div>
+      <div class="presets">
+        <button data-preset="neutral">中性</button>
+        <button data-preset="happy">开心</button>
+        <button data-preset="sad">难过</button>
+        <button data-preset="surprised">惊讶</button>
+      </div>
+      <div class="note" id="exprAvail">—</div>
+    </div>
+    <div class="panel" id="weightsPanel" style="display:none">
+      <div class="ttl">权重（绑定归属）</div>
+      <div id="legend"></div>
+      <div class="note" id="weightsNote">—</div>
+    </div>
+    <div class="panel" id="meshPanel" style="display:none">
+      <div class="ttl">网格 / UV</div>
+      <div class="note" id="meshNote">—</div>
+    </div>
     <h3>绘制层级（上=最前）</h3>
     <div id="list"></div>
     <div id="info">
@@ -133,6 +187,7 @@ const state = {
   sel: -1, zoom: 0.5, panX: 0, panY: 0,
   dirty: false, undo: [], hidden: new Set(),
   anim: "", animDur: 0, t: 0, playing: false, speed: 1, loop: true, lastTs: 0,
+  mode: "texture", expr: { blink: 0, mouth: 0, brow: 0 },
 };
 
 /* ---------------- atlas ---------------- */
@@ -200,7 +255,9 @@ function applyLoaded(skel, regions, page, label) {
   $("speedSel").disabled = names.length === 0;
   ["btnSave", "btnReset", "showBounds", "showPivot"].forEach(id => $(id).disabled = false);
   setStatus(`已载入 ${state.slots.length} 部件 / ${names.length} 动画 · ${label}`);
-  fitView(); renderList(); syncInputs(); updateTimeLabel(); render();
+  fitView(); renderList(); syncInputs(); updateTimeLabel();
+  if (state.mode !== "texture") refreshModePanels();
+  render();
 }
 
 /* ---------------- 动画采样 ---------------- */
@@ -246,6 +303,9 @@ function boneWorld(name, anim, t, cache) {
     rot += sampleField(ab.rotate, t, "value");
     sx *= sampleField(ab.scale, t, "x", 1);
     sy *= sampleField(ab.scale, t, "y", 1);
+  }
+  if (state.mode === "expr" && /head/i.test(name) && !exprGroups().eye.length) {
+    sy *= (1 - 0.05 * (state.expr.blink || 0));   // 无眼层时的兜底"眯眼"形变
   }
   const rad = rot * Math.PI / 180, cos = Math.cos(rad), sin = Math.sin(rad);
   const local = { a: cos * sx, b: sin * sx, c: -sin * sy, d: cos * sy, tx: x, ty: y };
@@ -294,6 +354,7 @@ function currentPose() {
       }
     }
   }
+  if (state.mode === "expr") Object.assign(attOverride, exprOverrides());
   return { anim, t: state.t, cache: {}, attOverride };
 }
 function render() {
@@ -307,6 +368,7 @@ function render() {
   const pose = currentPose();
   const showB = $("showBounds").checked, showP = $("showPivot").checked;
   const skin = (state.skel.skins && state.skel.skins[0]) || { attachments: {} };
+  ctx.globalAlpha = dimAlpha();
 
   for (let i = 0; i < state.slots.length; i++) {
     const sl = state.slots[i];
@@ -352,6 +414,228 @@ function render() {
       ctx.moveTo(pv.x, pv.y - 7); ctx.lineTo(pv.x, pv.y + 7); ctx.stroke();
     }
   }
+  ctx.globalAlpha = 1;
+  if (state.mode === "bones") drawBoneOverlay(pose);
+  if (state.mode === "weights") drawWeightOverlay(pose);
+  if (state.mode === "mesh") drawMeshOverlay(pose);
+}
+
+/* ---------------- 查看模式 ---------------- */
+function ikBoneSet() {
+  const set = new Set();
+  for (const e of (state.skel && state.skel.ik) || []) {
+    for (const b of e.bones || []) set.add(b);
+    if (e.target) set.add(e.target);
+  }
+  return set;
+}
+function dimAlpha() { return state.mode === "texture" ? 1 : 0.3; }
+
+function drawBoneOverlay(pose) {
+  const ik = ikBoneSet();
+  for (const b of state.boneList) {
+    const w = boneWorld(b.name, pose.anim, pose.t, pose.cache);
+    const p = proj(w.tx, w.ty);
+    if (b.parent && state.bones[b.parent]) {
+      const pw = boneWorld(b.parent, pose.anim, pose.t, pose.cache);
+      const pp = proj(pw.tx, pw.ty);
+      ctx.beginPath(); ctx.moveTo(pp.x, pp.y); ctx.lineTo(p.x, p.y);
+      ctx.strokeStyle = ik.has(b.name) ? "#f0b429" : "#5aa9ff";
+      ctx.lineWidth = ik.has(b.name) ? 2.4 : 2; ctx.stroke();
+    }
+    ctx.beginPath(); ctx.arc(p.x, p.y, ik.has(b.name) ? 4.2 : 3.2, 0, Math.PI * 2);
+    ctx.fillStyle = ik.has(b.name) ? "#f0b429" : "#5aa9ff"; ctx.fill();
+    ctx.strokeStyle = "#0b0e14"; ctx.lineWidth = 1; ctx.stroke();
+    if (state.zoom > 0.3) {
+      ctx.font = "10px ui-monospace,SFMono-Regular,Menlo,monospace";
+      ctx.fillStyle = "#c9d4e6";
+      ctx.fillText(b.name.replace(/^b_/, ""), p.x + 6, p.y - 6);
+    }
+  }
+}
+
+function drawWeightOverlay(pose) {
+  for (let i = 0; i < state.slots.length; i++) {
+    const sl = state.slots[i];
+    if (state.hidden.has(sl.name)) continue;
+    const bw = boneWorld(sl.bone, pose.anim, pose.t, pose.cache);
+    const off = matMul(bw, { a: 1, b: 0, c: 0, d: 1, tx: sl.att.x || 0, ty: sl.att.y || 0 });
+    const w = sl.att.width || 0, h = sl.att.height || 0;
+    const c = proj(off.tx, off.ty);
+    const hue = ((i * 47) + 200) % 360;
+    ctx.save();
+    ctx.translate(c.x, c.y);
+    ctx.rotate(Math.atan2(off.b, off.a));
+    ctx.scale(Math.hypot(off.a, off.b) * state.zoom, Math.hypot(off.c, off.d) * state.zoom);
+    ctx.globalAlpha = 0.34;
+    ctx.fillStyle = `hsl(${hue} 92% 58%)`;
+    ctx.fillRect(-w / 2, -h / 2, w, h);
+    ctx.globalAlpha = 0.95;
+    ctx.strokeStyle = `hsl(${hue} 92% 72%)`;
+    ctx.lineWidth = 1 / state.zoom;
+    ctx.strokeRect(-w / 2, -h / 2, w, h);
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+  // 骨骼名标签（权重归属）
+  ctx.font = "10px ui-monospace,SFMono-Regular,Menlo,monospace";
+  ctx.textAlign = "center";
+  for (let i = 0; i < state.slots.length; i++) {
+    const sl = state.slots[i];
+    if (state.hidden.has(sl.name)) continue;
+    const bw = boneWorld(sl.bone, pose.anim, pose.t, pose.cache);
+    const off = matMul(bw, { a: 1, b: 0, c: 0, d: 1, tx: sl.att.x || 0, ty: sl.att.y || 0 });
+    const c = proj(off.tx, off.ty);
+    const label = sl.bone.replace(/^b_/, "");
+    ctx.lineWidth = 3; ctx.strokeStyle = "rgba(10,13,20,.85)";
+    ctx.strokeText(label, c.x, c.y + 3);
+    ctx.fillStyle = "#eaf1fb";
+    ctx.fillText(label, c.x, c.y + 3);
+  }
+  ctx.textAlign = "left";
+}
+
+function drawMeshOverlay(pose) {
+  const NX = 8, NY = 8;
+  for (let i = 0; i < state.slots.length; i++) {
+    const sl = state.slots[i];
+    if (state.hidden.has(sl.name)) continue;
+    const bw = boneWorld(sl.bone, pose.anim, pose.t, pose.cache);
+    const off = matMul(bw, { a: 1, b: 0, c: 0, d: 1, tx: sl.att.x || 0, ty: sl.att.y || 0 });
+    const w = sl.att.width || 0, h = sl.att.height || 0;
+    const c = proj(off.tx, off.ty);
+    ctx.save();
+    ctx.translate(c.x, c.y);
+    ctx.rotate(Math.atan2(off.b, off.a));
+    ctx.scale(Math.hypot(off.a, off.b) * state.zoom, Math.hypot(off.c, off.d) * state.zoom);
+    const hasMesh = Array.isArray(sl.att.triangles) && Array.isArray(sl.att.uvs);
+    if (hasMesh) {
+      const uvs = sl.att.uvs, tris = sl.att.triangles;
+      const verts = (Array.isArray(sl.att.vertices) && sl.att.vertices.length === uvs.length)
+        ? sl.att.vertices : null;
+      const px = k => (verts ? verts[k] : (uvs[k] - 0.5) * w);
+      const py = k => (verts ? verts[k + 1] : (0.5 - uvs[k + 1]) * h);
+      ctx.strokeStyle = "rgba(90,169,255,.85)";
+      ctx.lineWidth = 0.9 / state.zoom;
+      ctx.beginPath();
+      for (let t = 0; t + 2 < tris.length; t += 3) {
+        const a = tris[t] * 2, b = tris[t + 1] * 2, c2 = tris[t + 2] * 2;
+        ctx.moveTo(px(a), py(a)); ctx.lineTo(px(b), py(b)); ctx.lineTo(px(c2), py(c2)); ctx.closePath();
+      }
+      ctx.stroke();
+      ctx.fillStyle = "#5aa9ff";
+      for (let k = 0; k < uvs.length; k += 2) {
+        ctx.beginPath(); ctx.arc(px(k), py(k), 1.8 / state.zoom, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.restore();
+      continue;
+    }
+
+    ctx.strokeStyle = "rgba(90,169,255,.55)";
+    ctx.lineWidth = 0.9 / state.zoom;
+    ctx.beginPath();
+    for (let gx = 0; gx <= NX; gx++) {
+      const x = -w / 2 + w * gx / NX;
+      ctx.moveTo(x, -h / 2); ctx.lineTo(x, h / 2);
+    }
+    for (let gy = 0; gy <= NY; gy++) {
+      const y = -h / 2 + h * gy / NY;
+      ctx.moveTo(-w / 2, y); ctx.lineTo(w / 2, y);
+    }
+    ctx.stroke();
+    ctx.strokeStyle = "#5aa9ff"; ctx.lineWidth = 1.6 / state.zoom;
+    ctx.strokeRect(-w / 2, -h / 2, w, h);
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+  drawUVInset();
+}
+
+function drawUVInset() {
+  if (!state.page) return;
+  const size = 150, pad = 12;
+  const x = viewW() - size - pad, y = viewH() - size - pad;
+  ctx.save();
+  ctx.globalAlpha = 0.92;
+  ctx.fillStyle = "#12151d"; ctx.strokeStyle = "#2c3444"; ctx.lineWidth = 1;
+  ctx.fillRect(x, y, size, size); ctx.strokeRect(x, y, size, size);
+  const s = Math.min(size / state.page.width, size / state.page.height);
+  const ox = x + (size - state.page.width * s) / 2;
+  const oy = y + (size - state.page.height * s) / 2;
+  ctx.globalAlpha = 0.55;
+  ctx.drawImage(state.page, ox, oy, state.page.width * s, state.page.height * s);
+  // 高亮选中部件的 UV 区域
+  const sel = state.slots[state.sel];
+  if (sel) {
+    const reg = state.regions[sel.attachment];
+    if (reg) {
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = "#f0b429"; ctx.lineWidth = 2;
+      ctx.strokeRect(ox + reg.x * s, oy + reg.y * s, reg.w * s, reg.h * s);
+    }
+  }
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = "#8b98ad"; ctx.font = "10px ui-monospace,monospace";
+  ctx.fillText("atlas · UV", x + 6, y + 13);
+  ctx.restore();
+}
+
+/* ---------------- 表情参数 ---------------- */
+function exprGroups() {
+  const bag = ((state.skel.skins && state.skel.skins[0]) || {}).attachments || {};
+  const g = { eye: [], mouth: [], brow: [] };
+  for (const sl of state.slots) {
+    const key = (sl.name + " " + sl.attachment).toLowerCase();
+    const atts = Object.keys(bag[sl.name] || {});
+    const item = { slot: sl.name, cur: sl.attachment, atts };
+    if (/eye|eyelid|blink/.test(key)) g.eye.push(item);
+    else if (/mouth|lip|jaw/.test(key)) g.mouth.push(item);
+    else if (/brow|eyebrow/.test(key)) g.brow.push(item);
+  }
+  return g;
+}
+function pickAtt(atts, patterns) {
+  for (const p of patterns) {
+    const hit = atts.find(a => p.test(a.toLowerCase()));
+    if (hit) return hit;
+  }
+  return null;
+}
+function exprOverrides() {
+  const { expr } = state, out = {};
+  const g = exprGroups();
+  if (g.eye.length) {
+    const closed = expr.blink > 0.5;
+    for (const it of g.eye) {
+      const target = closed ? pickAtt(it.atts, [/closed/, /shut/, /blink/, /sleep/]) : pickAtt(it.atts, [/open/, /normal/, /default/]);
+      if (target) out[it.slot] = target;
+    }
+  }
+  if (g.mouth.length) {
+    const idx = Math.max(0, Math.min(4, Math.round(expr.mouth)));
+    for (const it of g.mouth) {
+      if (it.atts.length > 1) out[it.slot] = it.atts[Math.min(idx, it.atts.length - 1)];
+    }
+  }
+  if (g.brow.length) {
+    const v = expr.brow;
+    const pats = v < -0.2 ? [/sad/, /angry/, /down/] : v > 0.2 ? [/happy/, /up/, /raised/] : [/neutral/, /default/, /normal/];
+    for (const it of g.brow) {
+      const target = pickAtt(it.atts, pats);
+      if (target) out[it.slot] = target;
+    }
+  }
+  return out;
+}
+function refreshExprPanel() {
+  const g = exprGroups();
+  const have = [];
+  if (g.eye.length) have.push("eye");
+  if (g.mouth.length) have.push("mouth");
+  if (g.brow.length) have.push("brow");
+  $("exprAvail").textContent = have.length
+    ? `检测到表情槽位：${have.join(" / ")}`
+    : '当前角色包没有 eye / mouth / brow 槽位：眨眼参数只驱动头部轻微形变，口型与眉毛无效。要真正调试表情，需要角色包含这些槽位与附件。';
 }
 
 /* ---------------- 播放控制 ---------------- */
@@ -584,6 +868,45 @@ function save() {
   setStatus("已导出 model.json（覆盖 assets/characters/deepseek/spine/model.json 后重跑打包）");
 }
 
+/* ---------------- 模式切换 ---------------- */
+function refreshModePanels() {
+  $("bonesPanel").style.display = state.mode === "bones" ? "" : "none";
+  $("exprPanel").style.display = state.mode === "expr" ? "" : "none";
+  $("weightsPanel").style.display = state.mode === "weights" ? "" : "none";
+  $("meshPanel").style.display = state.mode === "mesh" ? "" : "none";
+  if (state.mode === "bones") {
+    const ik = ikBoneSet();
+    const ikCount = ik.size, fkCount = state.boneList.length - ikCount;
+    $("boneLegend").innerHTML =
+      `<span><i style="background:#5aa9ff"></i>FK ${fkCount}</span>` +
+      `<span><i style="background:#f0b429"></i>IK ${ikCount}</span>`;
+    $("boneNote").textContent = ikCount
+      ? "蓝线为 FK 链、琥珀色为 IK（来自 skeleton.ik 列表）。关节圆点即骨骼原点，也是部件轴心。"
+      : "本角色包没有 ik 约束（skeleton.ik 为空），所以全部是 FK 链。若要区分 IK，需在骨架里配置 ik 约束或按命名约定标注。";
+  }
+  if (state.mode === "expr") refreshExprPanel();
+  if (state.mode === "weights") {
+    const legend = $("legend");
+    legend.innerHTML = "";
+    state.slots.slice(0, 6).forEach((sl, k) => {
+      const hue = ((k * 47) + 200) % 360;
+      const i = document.createElement("span");
+      i.innerHTML = `<i style="background:hsl(${hue} 92% 58%)"></i>${sl.attachment}`;
+      legend.appendChild(i);
+    });
+    $("weightsNote").textContent = '当前角色包为单骨刚性绑定：每个部件权重 1.0，颜色只表示"归属哪根骨"。带网格权重（vertices/weights）的角色包会显示真正的热力图。';
+  }
+  if (state.mode === "mesh") {
+    $("meshNote").textContent = '显示每个部件的网格细分与包围框；右下角是图集 UV 预览，黄框为选中部件在图集中的区域。带真实网格数据（vertices/triangles）时会画出三角面。';
+  }
+}
+function setMode(m) {
+  state.mode = m;
+  document.querySelectorAll("#modeBar button").forEach(b => b.classList.toggle("on", b.dataset.mode === m));
+  refreshModePanels();
+  render();
+}
+
 /* ---------------- UI 绑定 ---------------- */
 function setStatus(msg, warn) {
   const el = $("status"); el.textContent = msg;
@@ -597,6 +920,32 @@ $("btnSave").onclick = save;
 $("btnUndo").onclick = undo;
 $("btnReset").onclick = () => { while (state.undo.length) undo(); };
 $("btnFit").onclick = () => { fitView(); render(); };
+document.querySelectorAll("#modeBar button").forEach(b =>
+  b.addEventListener("click", () => setMode(b.dataset.mode)));
+function bindExpr(id, key, fmt) {
+  const el = $(id), out = $(id + "V");
+  el.oninput = () => {
+    state.expr[key] = Number(el.value);
+    out.textContent = fmt(Number(el.value));
+    render();
+  };
+}
+bindExpr("exBlink", "blink", v => v.toFixed(2));
+bindExpr("exMouth", "mouth", v => String(Math.round(v)));
+bindExpr("exBrow", "brow", v => v.toFixed(1));
+document.querySelectorAll("#exprPanel .presets button").forEach(b => {
+  b.onclick = () => {
+    const preset = b.dataset.preset;
+    state.expr = preset === "happy" ? { blink: 0, mouth: 2, brow: 0.5 }
+      : preset === "sad" ? { blink: 0.35, mouth: 1, brow: -1 }
+      : preset === "surprised" ? { blink: 0, mouth: 4, brow: 1 }
+      : { blink: 0, mouth: 0, brow: 0 };
+    $("exBlink").value = state.expr.blink; $("exBlinkV").textContent = state.expr.blink.toFixed(2);
+    $("exMouth").value = state.expr.mouth; $("exMouthV").textContent = String(Math.round(state.expr.mouth));
+    $("exBrow").value = state.expr.brow;  $("exBrowV").textContent = state.expr.brow.toFixed(1);
+    render();
+  };
+});
 $("showBounds").onchange = render;
 $("btnShowAll").onclick = () => {
   state.hidden.clear();
