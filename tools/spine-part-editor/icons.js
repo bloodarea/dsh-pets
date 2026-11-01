@@ -48,6 +48,35 @@
            <path d="M13.1 9v.7a2.4 2.4 0 0 1-2.4 2.4H5.6"/>
            <path d="M7.4 14.1 5.2 12.1 7.4 10.1"/>`,
 
+    /* ---- 工具/界面（T3 新增） ---- */
+    hand: `<path d="M5.4 7.8V5.1a1.05 1.05 0 0 1 2.1 0v2.4"/>
+           <path d="M7.5 7.5V4.4a1.05 1.05 0 0 1 2.1 0v3.1"/>
+           <path d="M9.6 7.6V5.6a1.05 1.05 0 0 1 2.1 0v4.9a4.3 4.3 0 0 1-4.3 4.3H6.9A4.4 4.4 0 0 1 2.9 11l-.6-1.9a1.05 1.05 0 0 1 1.9-.9l1.2 1.9"/>`,
+    search: `<circle cx="7.2" cy="7.2" r="4.2"/><path d="M10.4 10.4 14 14"/>`,
+    "chevron-down": `<path d="M4.2 6.2 8 10l3.8-3.8"/>`,
+    "chevron-right": `<path d="M6.2 4.2 10 8l-3.8 3.8"/>`,
+    help: `<circle cx="8" cy="8" r="6.1"/>
+           <path d="M6.2 6.1a1.85 1.85 0 0 1 3.6.5c0 1.2-1.8 1.5-1.8 2.8"/>
+           <circle cx="8" cy="11.6" r=".65" fill="currentColor" stroke="none"/>`,
+    info: `<circle cx="8" cy="8" r="6.1"/><path d="M8 7.4v4"/>
+           <circle cx="8" cy="5" r=".65" fill="currentColor" stroke="none"/>`,
+    alert: `<path d="M8 2.5 14.2 13H1.8z"/><path d="M8 6.4v3.3"/>
+            <circle cx="8" cy="11.4" r=".62" fill="currentColor" stroke="none"/>`,
+    close: `<path d="M4.4 4.4 11.6 11.6M11.6 4.4 4.4 11.6"/>`,
+    lock: `<rect x="3.6" y="7" width="8.8" height="6.2" rx="1.3"/>
+           <path d="M5.6 7V5.4a2.4 2.4 0 0 1 4.8 0V7"/>`,
+    unlock: `<rect x="3.6" y="7" width="8.8" height="6.2" rx="1.3"/>
+             <path d="M5.6 7V5.4a2.4 2.4 0 0 1 4.6-.9"/>`,
+    magnet: `<path d="M4.1 3.4v5.1a3.9 3.9 0 0 0 7.8 0V3.4"/>
+             <path d="M4.1 3.4h3.2M8.7 3.4h3.2"/><path d="M4.1 6.6h3.2M8.7 6.6h3.2"/>`,
+    "zoom-in": `<circle cx="7" cy="7" r="4.3"/><path d="M10.2 10.2 14 14"/>
+                <path d="M7 5.2v3.6M5.2 7h3.6"/>`,
+    "zoom-out": `<circle cx="7" cy="7" r="4.3"/><path d="M10.2 10.2 14 14"/><path d="M5.2 7h3.6"/>`,
+    panel: `<rect x="2.2" y="3" width="11.6" height="10" rx="1.4"/><path d="M9.6 3v10"/>`,
+    "skip-back": `<path d="M4.2 3.6v8.8"/><path d="M12.6 4.2 6.6 8l6 3.8z" fill="currentColor" stroke="none"/>`,
+    target: `<circle cx="8" cy="8" r="5.2"/><circle cx="8" cy="8" r="1.4"/>
+             <path d="M8 1.6v2M8 12.4v2M1.6 8h2M12.4 8h2"/>`,
+
     /* ---- 文件/操作 ---- */
     open: `<path d="M1.9 5.1A1.1 1.1 0 0 1 3 4h3.1l1.4 1.8h5.5A1.1 1.1 0 0 1 14.1 6.9v5.6a1.1 1.1 0 0 1-1.1 1.1H3a1.1 1.1 0 0 1-1.1-1.1z"/>`,
     sample: `<path d="M8 2.2 13.6 5v6L8 13.8 2.4 11V5z"/><path d="M2.4 5 8 7.8 13.6 5"/><path d="M8 7.8v6"/>`,
