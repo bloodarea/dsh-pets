@@ -128,9 +128,29 @@ The project is in an early stage. Issues, platform-specific bug reports, and rep
 
 ## Attribution and licensing
 
-DSH Pets is intended to evolve from [zuodazuoqiang001/dsh-pet](https://github.com/zuodazuoqiang001/dsh-pet), which is published under the **MIT License**. Any reused upstream code must retain the original copyright and license notices. This project's repository should include the applicable `LICENSE` file.
+### Project code
 
-**Character artwork, Spine animation data, voice recordings, and third-party SDKs have their own licenses.** No third-party character or voice asset should be bundled without permission, and every pack ships its own `LICENSE` next to its assets. Spine runtimes and exported animation data are subject to Esoteric Software's commercial licensing terms; confirm the applicable terms before shipping. Character packs are themed after model families but are **not** official brand material.
+DSH Pets is intended to evolve from [zuodazuoqiang001/dsh-pet](https://github.com/zuodazuoqiang001/dsh-pet), which is published under the **MIT License**. Any reused upstream code retains its original copyright and license notices, and this repository should carry the applicable `LICENSE` file.
+
+### Character packs: CC BY-NC-SA 4.0, non-commercial
+
+The bundled `deepseek` pack is built on community fan artwork and is distributed under **Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International** ([CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/deed.zh-hans)), following the original author's [copyright statement](https://www.bilibili.com/opus/1247156596114456581).
+
+- **Attribution is mandatory**: 上善无形 / 上善 for the original character and ZipZipPipe for the DeepSeek redesign ([author page](https://space.bilibili.com/4168597)); each pack credits its own contributors in `CREDITS.md`.
+- **Commercial use is not permitted, in any form.** This project grants no commercial license.
+- **Share-alike**: adaptations of the artwork must be released under the same CC BY-NC-SA 4.0 license, with modifications indicated.
+- The packs exist for **open-source learning and personal use** only.
+- Every pack ships its own `LICENSE` and `CREDITS.md` beside its assets — see [assets/characters/deepseek/LICENSE](assets/characters/deepseek/LICENSE) and [CREDITS.md](assets/characters/deepseek/CREDITS.md) for the full provenance chain and the assets deliberately **not** included.
+- **Takedown**: if a rights holder objects to any included asset, open an [issue](https://github.com/bloodarea/dsh-pets/issues) with the file path and a verifiable source; the asset will be removed after verification. CC licenses are irrevocable, so this commits us to stopping distribution, not to amending the license.
+- Character packs are themed after model families but are **not** official brand material.
+
+### Trademarks
+
+Names and marks such as DeepSeek, Claude, GPT, Kimi, and Qwen belong to their respective owners. Nothing in this project implies affiliation with or endorsement by any of them.
+
+### Spine runtime
+
+Spine runtimes and exported animation data are subject to Esoteric Software's commercial licensing terms; confirm the applicable terms before shipping. Other third-party SDKs and assets keep their own licenses.
 
 ---
 

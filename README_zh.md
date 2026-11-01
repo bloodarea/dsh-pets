@@ -128,9 +128,29 @@ assets/characters/                 # 内置，只读
 
 ## 来源与许可证
 
-DSH Pets 计划基于 [zuodazuoqiang001/dsh-pet](https://github.com/zuodazuoqiang001/dsh-pet) 逐步扩展为跨平台桌宠。原项目采用 **MIT License**。复用上游代码时需要保留原有版权和许可证声明，仓库应包含适用的 `LICENSE` 文件。
+### 项目代码
 
-**角色立绘、Spine 动画数据、预录制语音及第三方 SDK 的授权需要独立确认。** 未取得授权时不应打包分发第三方角色或语音资源，每个角色包都要在自己的目录内附 `LICENSE`。Spine 运行时与导出的动画数据受 Esoteric Software 的商业许可约束，分发前需核对适用条款。角色包仅以模型系列为主题，**不代表任何厂商官方**，也不包含厂商素材。
+DSH Pets 计划基于 [zuodazuoqiang001/dsh-pet](https://github.com/zuodazuoqiang001/dsh-pet) 逐步扩展为跨平台桌宠，原项目采用 **MIT License**。复用上游代码时保留原有版权与许可证声明，仓库应包含适用的 `LICENSE` 文件。
+
+### 角色包：CC BY-NC-SA 4.0，禁止商用
+
+内置的 `deepseek` 角色包基于社区同人素材，采用 **知识共享 署名-非商业性使用-相同方式共享 4.0 国际** 许可（[CC BY-NC-SA 4.0 中文说明](https://creativecommons.org/licenses/by-nc-sa/4.0/deed.zh-hans)），依据原作者本人发布的[版权声明](https://www.bilibili.com/opus/1247156596114456581)。
+
+- **必须署名**：原形象作者 上善无形 / 上善，DeepSeek 二次设计作者 ZipZipPipe（[作者主页](https://space.bilibili.com/4168597)）；每个角色包在 `CREDITS.md` 内登记各自的贡献者。
+- **不得用于任何形式的商业用途**。本项目不提供任何商业授权。
+- **相同方式共享**：对素材的演绎作品必须以同一 CC BY-NC-SA 4.0 许可发布，并注明修改内容。
+- 角色包**仅供开源学习与个人使用**。
+- 每个角色包都在自己的目录内附 `LICENSE` 与 `CREDITS.md`——详见 [assets/characters/deepseek/LICENSE](assets/characters/deepseek/LICENSE) 与 [CREDITS.md](assets/characters/deepseek/CREDITS.md)，其中也列明了**刻意未收录**的素材。
+- **下架与更正**：权利人若认为素材使用不妥，请在 [Issue](https://github.com/bloodarea/dsh-pets/issues) 中指明文件路径与可核实的出处，核实后立即移除。CC 许可一经授予不可撤销，因此这是"停止分发"的承诺，而不是修改许可条款。
+- 角色包仅以模型系列为主题，**不代表任何厂商官方**。
+
+### 商标
+
+DeepSeek、Claude、GPT、Kimi、Qwen 等名称与商标归各自权利人所有。本项目与上述厂商不存在隶属、合作或背书关系。
+
+### Spine 运行时
+
+Spine 运行时与导出的动画数据受 Esoteric Software 的商业许可约束，分发前需核对适用条款。其他第三方 SDK 与素材各自保留其许可。
 
 ---
 

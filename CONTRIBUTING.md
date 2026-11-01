@@ -59,8 +59,15 @@
   `node_modules` 会被更新整目录替换，用户下载的角色会丢。
 - 运行时解析顺序：用户目录 > 内置目录（同名时用户覆盖内置），并提供"重置为内置"。
 - 每个角色包必须有 `manifest.json`（`schemaVersion` / `id` / `version` / `render` / `states` /
-  `fallback` / `voice` / `license`）与 `LICENSE`；格式细节见本地文档
+  `fallback` / `voice` / `license` / `licenseUrl` / `credits`）、`LICENSE` 与 `CREDITS.md`
+  （来源链 + 未采用内容 + 修改说明）；格式细节见本地文档
   `docs/architecture/character-pack-format.md`（`docs/` 不入库）。
+- **许可**：默认包素材采用 **CC BY-NC-SA 4.0**——必须署名 上善无形/上善 与 ZipZipPipe，
+  **禁止任何商业用途**，演绎须同许可并注明修改。CC 许可不得附加额外限制，"仅供学习参考"
+  只能作为项目立场表述。依据：<https://creativecommons.org/licenses/by-nc-sa/4.0/deed.zh-hans>、
+  作者声明 <https://www.bilibili.com/opus/1247156596114456581>。
+- **不收录**厂商官方素材（头像、Logo、官方插画）与未获授权的配音；权利人异议按上述同款
+  Issue 流程核实后移除（CC 不可撤销，承诺为"停止分发"）。
 - **授权前置**：Spine 运行时与导出动画数据受 Esoteric Software 的商业许可约束，新增角色包前
   先确认许可与素材来源；品牌主题（DeepSeek / Claude / GPT / Kimi / Qwen）需标注"非官方"。
 
