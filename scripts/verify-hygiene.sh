@@ -118,6 +118,9 @@ for f in "${files[@]}"; do
     # --- 规则 3d：Python 字节码 ---
     __pycache__/*|*.pyc|*.pyo)
       block "$f" "Python 字节码不入库（应加入 .gitignore）"; continue ;;
+    # --- 规则 3e：测试产物 ---
+    output/*)
+      block "$f" "测试产物（截图/验收证据）不入库：由验证流程现生成"; continue ;;
     # --- 规则 4：凭据与本地配置 ---
     *.pem|*.key|*.p12|*.pfx|secrets.json|local.config.json)
       block "$f" "凭据类文件严禁入库"; continue ;;

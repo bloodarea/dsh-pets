@@ -44,6 +44,9 @@
   .item .z{color:var(--dim);font-variant-numeric:tabular-nums;width:18px;text-align:right}
   .item .mv{display:flex;gap:2px}
   .item .mv button{padding:0 5px;font-size:11px;line-height:17px}
+  .item.hid .nm{opacity:.45;text-decoration:line-through}
+  .item .eye{padding:0 4px;font-size:12px;line-height:17px;background:transparent;border-color:transparent}
+  .item .eye:hover{background:#34405a;border-color:var(--line)}
   #info{padding:7px 10px;border-top:1px solid var(--line);display:grid;
         grid-template-columns:auto 1fr;gap:5px 8px;font-size:12px}
   #info .k{color:var(--dim)}
@@ -84,6 +87,9 @@
     <label>Y</label><input id="posY" type="number" step="1" disabled>
   </div>
   <div class="grp">
+    <button id="btnShowAll" disabled>全部显示</button>
+  </div>
+  <div class="grp">
     <span class="badge mono" id="zoomLabel">—</span>
     <button id="btnFit">适配</button>
     <label><input id="showBounds" type="checkbox"> 边框</label>
@@ -102,7 +108,7 @@
       <span class="k">骨骼</span><span id="selBone">—</span>
       <span class="k">dirty</span><span id="selDirty">—</span>
     </div>
-    <div id="hint">拖拽移动 · 方向键微调（Shift ×10）· <b>[</b>/<b>]</b> 调层级 · Ctrl+Z 撤销 · 空格播放/暂停 · Shift+空格 平移 · 滚轮缩放</div>
+    <div id="hint">拖拽移动 · 方向键微调（Shift ×10）· <b>[</b>/<b>]</b> 调层级 · Ctrl+Z 撤销 · 空格播放/暂停 · H 隐藏/显示 · 空格+拖 平移 · 滚轮缩放</div>
   </aside>
 </main>
 
@@ -117,7 +123,7 @@ const state = {
   skel: null, regions: {}, page: null,
   slots: [], bones: {}, boneList: [],
   sel: -1, zoom: 0.5, panX: 0, panY: 0,
-  dirty: false, undo: [],
+  dirty: false, undo: [], hidden: new Set(),
   anim: "", animDur: 0, t: 0, playing: false, speed: 1, loop: true, lastTs: 0,
 };
 
@@ -173,6 +179,7 @@ function applyLoaded(skel, regions, page, label) {
     return { name: sl.name, bone: sl.bone, attachment: sl.attachment, att: bag[sl.attachment] || {} };
   });
   state.sel = -1; state.dirty = false; state.undo = [];
+  state.hidden = new Set();
   state.anim = ""; state.t = 0; state.playing = false;
 
   const names = Object.keys(skel.animations || {});
@@ -295,6 +302,7 @@ function render() {
 
   for (let i = 0; i < state.slots.length; i++) {
     const sl = state.slots[i];
+    if (state.hidden.has(sl.name)) continue;
     const attName = pose.attOverride[sl.name] || sl.attachment;
     const reg = state.regions[attName];
     if (!reg) continue;
@@ -394,16 +402,23 @@ function renderList() {
   for (let i = state.slots.length - 1; i >= 0; i--) {
     const sl = state.slots[i];
     const el = document.createElement("div");
-    el.className = "item" + (i === state.sel ? " sel" : "");
+    const hid = state.hidden.has(sl.name);
+    el.className = "item" + (i === state.sel ? " sel" : "") + (hid ? " hid" : "");
     el.innerHTML = `<span class="z">${i}</span><span class="nm">${sl.attachment}</span>
+      <button class="eye" data-eye="1" title="${hid ? "显示" : "隐藏"}">${hid ? "🙈" : "👁"}</button>
       <span class="mv">
         <button data-a="top" title="置顶">⤒</button>
         <button data-a="up" title="上移">↑</button>
         <button data-a="down" title="下移">↓</button>
         <button data-a="bottom" title="置底">⤓</button>
       </span>`;
-    el.addEventListener("click", e => { if (e.target.tagName !== "BUTTON") select(i); });
-    el.querySelectorAll("button").forEach(btn =>
+    el.addEventListener("click", e => {
+      if (e.target.tagName !== "BUTTON") select(i);
+    });
+    el.querySelector('button[data-eye]').addEventListener("click", e => {
+      e.stopPropagation(); toggleHidden(i);
+    });
+    el.querySelectorAll("button[data-a]").forEach(btn =>
       btn.addEventListener("click", e => { e.stopPropagation(); moveZ(i, btn.dataset.a); }));
     box.appendChild(el);
   }
@@ -443,6 +458,14 @@ function undo() {
   $("btnUndo").disabled = state.undo.length === 0;
   renderList(); render(); syncInputs();
 }
+function toggleHidden(i) {
+  const name = state.slots[i].name;
+  if (state.hidden.has(name)) state.hidden.delete(name);
+  else state.hidden.add(name);
+  $("btnShowAll").disabled = state.hidden.size === 0;
+  renderList(); render();
+}
+
 function moveZ(i, action) {
   pushUndo();
   const arr = state.slots, pos = i;
@@ -466,6 +489,7 @@ let drag = null, spaceDown = false;
 function hitTest(p, pose) {
   for (let i = state.slots.length - 1; i >= 0; i--) {
     const sl = state.slots[i];
+    if (state.hidden.has(sl.name)) continue;
     const bw = boneWorld(sl.bone, pose.anim, pose.t, pose.cache);
     const off = matMul(bw, { a: 1, b: 0, c: 0, d: 1, tx: sl.att.x || 0, ty: sl.att.y || 0 });
     const lx = p.x - off.tx, ly = p.y - off.ty;
@@ -529,6 +553,7 @@ window.addEventListener("keydown", e => {
     e.preventDefault(); pushUndo(); moveBone(bone, map[e.key][0], map[e.key][1]);
     state.dirty = true; render(); syncInputs(); return;
   }
+  if (e.key.toLowerCase() === "h") { e.preventDefault(); toggleHidden(state.sel); return; }
   if (e.key === "[") { e.preventDefault(); moveZ(state.sel, "down"); }
   if (e.key === "]") { e.preventDefault(); moveZ(state.sel, "up"); }
 });
@@ -565,6 +590,11 @@ $("btnUndo").onclick = undo;
 $("btnReset").onclick = () => { while (state.undo.length) undo(); };
 $("btnFit").onclick = () => { fitView(); render(); };
 $("showBounds").onchange = render;
+$("btnShowAll").onclick = () => {
+  state.hidden.clear();
+  $("btnShowAll").disabled = true;
+  renderList(); render();
+};
 $("showPivot").onchange = render;
 $("animSel").onchange = e => setAnim(e.target.value);
 $("btnPlay").onclick = togglePlay;
