@@ -13,6 +13,7 @@
 | `README.md` `README_zh.md` `CONTRIBUTING.md` `AGENTS.md` | ✅ | 对外文档与协作约定 |
 | `scripts/` | ✅ | 构建 / 校验 / 发布脚本 |
 | `THIRD-PARTY-NOTICES.md` | ✅ | 第三方代码与资源出处、许可证 |
+| `LICENSE` | ✅ | 分离授权总述：代码 MIT / 角色资产 CC BY-NC-SA 4.0 |
 | `assets/characters/deepseek/**` | ✅ | **默认角色包**（Spine 模型、语音、preview），随程序打包 |
 | `assets/characters/index.json` | ✅ | 可下载角色索引（版本 / sha256 / 下载地址） |
 | `assets/characters/<其他 id>/**` | ❌ | 其他角色按需下载，运行时落 `~/.dsh/pets/characters/` |
@@ -59,7 +60,7 @@
   `node_modules` 会被更新整目录替换，用户下载的角色会丢。
 - 运行时解析顺序：用户目录 > 内置目录（同名时用户覆盖内置），并提供"重置为内置"。
 - 每个角色包必须有 `manifest.json`（`schemaVersion` / `id` / `version` / `render` / `states` /
-  `fallback` / `voice` / `license` / `licenseUrl` / `credits`）、`LICENSE` 与 `CREDITS.md`
+  `fallback` / `voice` / `license` / `licenseUrl` / `credits`）、`LICENSE` 与 `ATTRIBUTION.md`
   （来源链 + 未采用内容 + 修改说明）；格式细节见本地文档
   `docs/architecture/character-pack-format.md`（`docs/` 不入库）。
 - **许可**：默认包素材采用 **CC BY-NC-SA 4.0**——必须署名 上善无形/上善 与 ZipZipPipe，

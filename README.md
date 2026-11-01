@@ -128,20 +128,23 @@ The project is in an early stage. Issues, platform-specific bug reports, and rep
 
 ## Attribution and licensing
 
-### Project code
+This project uses **split licensing**: source code is MIT, character art is CC BY-NC-SA 4.0. The authoritative text is the root [LICENSE](LICENSE).
 
-DSH Pets is intended to evolve from [zuodazuoqiang001/dsh-pet](https://github.com/zuodazuoqiang001/dsh-pet), which is published under the **MIT License**. Any reused upstream code retains its original copyright and license notices, and this repository should carry the applicable `LICENSE` file.
+### Project code: MIT
+
+DSH Pets is intended to evolve from [zuodazuoqiang001/dsh-pet](https://github.com/zuodazuoqiang001/dsh-pet) (MIT). Source code, scripts and docs are MIT, and reused upstream code keeps its original copyright and license notices. **The MIT grant does not extend to `assets/characters/`.**
 
 ### Character packs: CC BY-NC-SA 4.0, non-commercial
 
-The bundled `deepseek` pack is built on community fan artwork and is distributed under **Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International** ([CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/deed.zh-hans)), following the original author's [copyright statement](https://www.bilibili.com/opus/1247156596114456581).
+The bundled `deepseek` pack is built on community fan artwork and is distributed under **Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International** ([CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/deed.zh-hans)), following the original author's [copyright statement](https://www.bilibili.com/opus/1247156596114456581). Three rules apply:
 
-- **Attribution is mandatory**: 上善无形 / 上善 for the original character and ZipZipPipe for the DeepSeek redesign ([author page](https://space.bilibili.com/4168597)); each pack credits its own contributors in `CREDITS.md`.
-- **Commercial use is not permitted, in any form.** This project grants no commercial license.
-- **Share-alike**: adaptations of the artwork must be released under the same CC BY-NC-SA 4.0 license, with modifications indicated.
-- The packs exist for **open-source learning and personal use** only.
-- Every pack ships its own `LICENSE` and `CREDITS.md` beside its assets — see [assets/characters/deepseek/LICENSE](assets/characters/deepseek/LICENSE) and [CREDITS.md](assets/characters/deepseek/CREDITS.md) for the full provenance chain and the assets deliberately **not** included.
-- **Takedown**: if a rights holder objects to any included asset, open an [issue](https://github.com/bloodarea/dsh-pets/issues) with the file path and a verifiable source; the asset will be removed after verification. CC licenses are irrevocable, so this commits us to stopping distribution, not to amending the license.
+1. **The attribution chain must stay complete.** The whale-girl prototype is by 上善无形 / 上善, the DeepSeek personification redesign is by ZipZipPipe ([author page](https://space.bilibili.com/4168597)), and this project contributes the derivative production and packaging. All three must be credited; omitting any link breaks the license.
+2. **Free distribution is not commercial permission.** Publishing free-of-charge on GitHub Releases or npm satisfies the non-commercial requirement, but it neither grants nor transfers any commercial right. Nobody may put a pack or its derivatives into commercial products, paid services or for-profit distribution on that basis.
+3. **We cannot license rights we do not hold.** Every character, texture and audio asset needs its own verified upstream authorization; anything unverified is excluded, and the reasons are listed in `ATTRIBUTION.md`. Third-party assets keep their own licenses — this project grants nothing on their behalf.
+
+- Reuse requires: keep attribution, indicate your changes, non-commercial use only, and release derivative contributions under the same CC BY-NC-SA 4.0.
+- Every pack ships its own `LICENSE` and `ATTRIBUTION.md` beside its assets — see [assets/characters/deepseek/LICENSE](assets/characters/deepseek/LICENSE) and [ATTRIBUTION.md](assets/characters/deepseek/ATTRIBUTION.md) for the full provenance chain and the assets deliberately **not** included.
+- **Takedown**: if a rights holder objects to any included asset, open an [issue](https://github.com/bloodarea/dsh-pets/issues) with the file path and a verifiable source; the asset is removed after verification. CC licenses are irrevocable, so this commits us to stopping distribution, not to amending the license.
 - Character packs are themed after model families but are **not** official brand material.
 
 ### Trademarks
