@@ -22,41 +22,52 @@ from PIL import Image, ImageFilter
 # 背景判定：接近纯白且低饱和
 BG_MIN = 238
 BG_CHROMA = 12
+# 删除被发丝闭合的白色缝隙：页白与绘画白在颜色上无法可靠区分，
+# 误判会把围裙/蕾丝打穿，故默认关闭；发缝建议改用绿幕素材（生图 API 出图）解决。
+GAP_REMOVE = False
 
 
 def bg_mask(rgb):
-    """返回背景布尔掩码：从图像四边泛洪，只吞并「接近纯白」的连通区域，
-    这样角色身上的白色围裙/蕾丝不会被误删。"""
+    """背景掩码：全分辨率精确求解，不做下采样（下采样会把边缘变成 4px 方块锯齿）。
+
+    1) 与图像四边连通的近白区域 = 背景；
+    2) 被发丝闭合的近白缝隙 = 背景（外环为饱和蓝发，色度 ≥ 23；围裙/蕾丝的外环 ≤ 21.6）。
+    """
+    from scipy import ndimage
+
     mn = rgb.min(axis=2).astype(np.int16)
     mx = rgb.max(axis=2).astype(np.int16)
     near_white = (mn >= BG_MIN) & ((mx - mn) <= BG_CHROMA)
 
-    h, w = near_white.shape
-    # 缩小 4 倍做泛洪，速度足够且边界由全分辨率 near_white 决定
-    s = 4
-    small = near_white[::s, ::s]
-    sh, sw = small.shape
-    seen = np.zeros((sh, sw), bool)
-    dq = deque()
-    for x in range(sw):
-        for y in (0, sh - 1):
-            if small[y, x] and not seen[y, x]:
-                seen[y, x] = True
-                dq.append((y, x))
-    for y in range(sh):
-        for x in (0, sw - 1):
-            if small[y, x] and not seen[y, x]:
-                seen[y, x] = True
-                dq.append((y, x))
-    while dq:
-        y, x = dq.popleft()
-        for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-            ny, nx = y + dy, x + dx
-            if 0 <= ny < sh and 0 <= nx < sw and small[ny, nx] and not seen[ny, nx]:
-                seen[ny, nx] = True
-                dq.append((ny, nx))
-    back = np.repeat(np.repeat(seen, s, axis=0), s, axis=1)[:h, :w]
-    return back & near_white
+    lab, n = ndimage.label(near_white)
+    if n:
+        border_ids = np.unique(np.concatenate([
+            lab[0, :], lab[-1, :], lab[:, 0], lab[:, -1]]))
+        border_ids = border_ids[border_ids != 0]
+        border_bg = np.isin(lab, border_ids)
+    else:
+        border_bg = near_white
+
+    if not GAP_REMOVE:
+        return border_bg
+    chroma = (mx - mn).astype(np.float32)
+    gap = np.zeros_like(border_bg)
+    for i in range(1, n + 1):
+        m = lab == i
+        area = int(m.sum())
+        if border_bg[m].any() or area > 4000:
+            continue
+        ring = ndimage.binary_dilation(m, iterations=3) & ~m
+        if not ring.any() or float(chroma[ring].mean()) < 23:
+            continue  # 外环不是饱和发色 → 是衣服/皮肤上的白块，保留
+        # 页白是中性灰（|R-B|≈0.5），画出来的白细节带暖色（|R-B|≈7）；
+        # 只有中性白或足够大的区域才判为背景，避免把裙子圆点、眼内高光删掉。
+        mean = rgb[m].mean(axis=0).astype(np.float32)
+        neutral = (abs(float(mean[0]) - float(mean[2])) < 3.0
+                   and abs(float(mean[0]) - float(mean[1])) < 3.0)
+        if area >= 150 or (neutral and area >= 60):
+            gap |= m
+    return border_bg | gap
 
 
 def clean_subject(alpha):
@@ -69,7 +80,7 @@ def clean_subject(alpha):
     sizes = ndimage.sum(subj, lab, range(1, n + 1))
     keep_ids = [i + 1 for i, sz in enumerate(sizes) if sz > subj.size * 0.0005]
     keep = np.isin(lab, keep_ids) if keep_ids else subj
-    keep = ndimage.binary_fill_holes(keep)
+    # 注意：不要 binary_fill_holes —— 那会把头发丝之间的透明缝隙填成不透明白块
     return np.where(keep, 255, 0).astype(np.uint8)
 
 
@@ -93,20 +104,32 @@ def split_views(alpha):
 
 
 def cut_view(rgb, alpha, box, target_h):
+    """裁出一栏并缩放到目标高度。
+
+    关键：先把 RGB 预乘 alpha 再缩放，最后反预乘。否则 LANCZOS 会把原图的白色
+    背景色混进边缘像素，缩小后就是一圈白边/锯齿。
+    """
     x0, x1 = box
     sub_a = alpha[:, x0:x1]
     rows = np.where((sub_a > 8).any(axis=1))[0]
     if not len(rows):
         return None
     y0, y1 = rows[0], rows[-1] + 1
-    img = Image.fromarray(np.dstack([rgb[:, x0:x1], sub_a])[y0:y1], "RGBA")
-    w, h = img.size
+    sub_rgb = rgb[y0:y1, x0:x1].astype(np.float32)
+    a = (sub_a[y0:y1].astype(np.float32)) / 255.0
+    h, w = a.shape
     scale = target_h / h
-    img = img.resize((max(1, round(w * scale)), target_h), Image.LANCZOS)
-    # 边缘柔化 1px，避免硬切的白边
-    a = img.getchannel("A").filter(ImageFilter.GaussianBlur(0.8))
-    img.putalpha(a)
-    return img
+    size = (max(1, round(w * scale)), target_h)
+
+    pm = np.dstack([sub_rgb * a[..., None], a * 255.0])
+    out = np.zeros((target_h, size[0], 4), np.float32)
+    for c in range(4):
+        ch = Image.fromarray(pm[..., c], mode="F").resize(size, Image.LANCZOS)
+        out[..., c] = np.array(ch)
+    aa = np.clip(out[..., 3] / 255.0, 0.0, 1.0)
+    rgb_out = np.where(aa[..., None] > 1e-4, out[..., :3] / np.maximum(aa[..., None], 1e-4), 0)
+    rgba = np.dstack([np.clip(rgb_out, 0, 255), aa * 255.0]).astype(np.uint8)
+    return Image.fromarray(rgba, "RGBA")
 
 
 def build_skeleton(name, views, height):

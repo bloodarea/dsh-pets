@@ -1,9 +1,9 @@
 {
  "skeleton": {
   "spine": "4.2.00",
-  "x": -221.0,
+  "x": -272.5,
   "y": -20,
-  "width": 442,
+  "width": 545,
   "height": 760
  },
  "bones": [
@@ -38,19 +38,19 @@
      "front": {
       "x": 0,
       "y": 360.0,
-      "width": 442,
+      "width": 545,
       "height": 720
      },
      "side": {
       "x": 0,
       "y": 360.0,
-      "width": 396,
+      "width": 487,
       "height": 720
      },
      "back": {
       "x": 0,
       "y": 360.0,
-      "width": 414,
+      "width": 477,
       "height": 720
      }
     }
