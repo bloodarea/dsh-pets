@@ -70,14 +70,16 @@ assets/characters/                 # bundled, read-only
     LICENSE
     preview.webp
     spine/                         # Spine skeleton, atlas and textures
-    voice/                         # pre-recorded status lines (optional per event)
+    voice/
+      index.json                   # voice index: every event and line the pack can speak
+      <event>/<id>.ogg             # one file per line, e.g. task_completed/task_completed_01.ogg
 
 ~/.dsh/pets/characters/<id>/       # downloaded, writable, overrides the bundled copy
 ```
 
-`manifest.json` is the contract, so the runtime never guesses file names. It declares the Spine entry plus scale and anchor, the agent-state → animation mapping (`idle`, `working`, `attention`, `done`, `failed`), which voice lines exist for each event, and a static-image fallback for machines without GPU acceleration. A pack may omit a voice event, and that event simply stays silent.
+`manifest.json` is the contract, so the runtime never guesses file names. It declares the Spine entry plus scale and anchor, the agent-state → animation mapping (`idle`, `working`, `attention`, `done`, `failed`), the location of the voice index (`voice.index`), and a static-image fallback for machines without GPU acceleration. **The event set is defined by the voice index, not enumerated in the manifest**: the bundled pack currently ships 48 lines across 34 events, each line addressed as `voice/<event>/<id>.ogg`. A voice pack carries no version of its own — the pack's `version` in `manifest.json` covers art, animation and audio together. A pack may ship no voice index at all, and every event then stays silent.
 
-This layout is the **agreed target**, not yet implemented. Voice lines are recorded or generated **ahead of time** and shipped inside a character pack. **There is no runtime text-to-speech generation requirement**, no mandatory TTS API, and no need to send session text to a speech provider.
+This layout is the **agreed target**: the bundled pack already ships its assets this way, but runtime voice playback is **not implemented yet**. Voice lines are recorded or generated **ahead of time** and shipped inside a character pack. **There is no runtime text-to-speech generation requirement**, no mandatory TTS API, and no need to send session text to a speech provider.
 
 Tools for producing illustrations, skeleton animation, or audio may be used **offline during asset creation**; they are not part of the DSH Pets runtime.
 

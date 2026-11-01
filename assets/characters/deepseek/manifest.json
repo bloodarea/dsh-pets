@@ -42,8 +42,6 @@
     "failed": "sad"
   },
   "voice": {
-    "task-completed": null,
-    "task-failed": null,
-    "approval-required": null
+    "index": "voice/index.json"
   }
 }
