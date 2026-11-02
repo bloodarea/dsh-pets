@@ -16,6 +16,7 @@
 | `LICENSE` | ✅ | 分离授权总述：代码 MIT / 角色资产 CC BY-NC-SA 4.0 |
 | `assets/characters/deepseek/**` | ✅ | **默认角色包**（Spine 模型、语音、preview），随程序打包 |
 | `assets/characters/index.json` | ✅ | 可下载角色索引（版本 / sha256 / 下载地址） |
+| `assets/source/**` | ✅ | **拆件精修工作区**：三视图源、拆分部件、表情差分与 manifest（构建输入，不参与运行时加载） |
 | `assets/characters/<其他 id>/**` | ❌ | 其他角色按需下载，运行时落 `~/.dsh/pets/characters/` |
 | **`docs/**`（文档、设计稿、调研笔记、PDF/Office 文件）** | ❌ | 内部文档只在本地保存 |
 | **`docs/assets/*.png` 等图片** | ✅ | README 需要引用的图片与截图（**唯一例外**） |
@@ -72,6 +73,17 @@
   Issue 流程核实后移除（CC 不可撤销，承诺为"停止分发"）。
 - **授权前置**：Spine 运行时与导出动画数据受 Esoteric Software 的商业许可约束，新增角色包前
   先确认许可与素材来源；品牌主题（DeepSeek / Claude / GPT / Kimi / Qwen）需标注"非官方"。
+
+## 3b. `assets/source/`：拆件精修工作区（构建输入）
+
+「三视图 → 拆分部件 / 表情差分」的精修工作区：存源素材（三视图）、切件产出（1× / 图集尺度）、
+表情差分与每批素材的 `manifest.json`。**不参与运行时加载，也不进角色 ZIP 包**。
+
+- 只放图片与 JSON 清单；生产脚本留在本机 `output/work/`（不入库），目录语义与复现命令写在
+  `assets/source/README.md`；
+- 新增 / 替换图片必须同步更新对应 `manifest.json` 的 `size` / `bbox` / `sha256` 与度量字段；
+- 体积按通用门禁（单文件 ≤ 5 MiB），当前最大文件 < 1 MiB；
+- 许可仍按角色素材处理（CC BY-NC-SA 4.0，署名见 `assets/characters/deepseek/ATTRIBUTION.md`）。
 
 ## 4. `references/`：参考项目与技术实验的隔离区
 

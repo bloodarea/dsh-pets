@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "character": "deepseek",
+  "role": "三视图原始素材（正 / 侧 / 背），拆件与表情差分的参考基准",
+  "frames": [
+    {
+      "view": "front",
+      "file": "front.png",
+      "size": [
+        545,
+        720
+      ],
+      "px": 261625,
+      "alphaMax": 255,
+      "semiAlphaPx": 13501,
+      "semiAlphaRatio": 0.0516,
+      "legacyRegion": [
+        489,
+        4,
+        545,
+        720
+      ],
+      "source": "output/review/2026-11-06-parts-v2/ref/front-view.png",
+      "sha256": "6a33f3fcd648d7fe9ae9fc9af4c233b478cd63c56fc2ed41934ed3c178b44733"
+    },
+    {
+      "view": "side",
+      "file": "side.png",
+      "size": [
+        487,
+        720
+      ],
+      "px": 228919,
+      "alphaMax": 255,
+      "semiAlphaPx": 11883,
+      "semiAlphaRatio": 0.0519,
+      "legacyRegion": [
+        1042,
+        4,
+        487,
+        720
+      ],
+      "source": "output/review/2026-11-06-parts-v2/ref/side-view.png",
+      "sha256": "9b620d16f3a07f591cd1fe3abe17932a3c02475584d18c227b0d0c4c66c6bcf6"
+    },
+    {
+      "view": "back",
+      "file": "back.png",
+      "size": [
+        477,
+        720
+      ],
+      "px": 228636,
+      "alphaMax": 255,
+      "semiAlphaPx": 12030,
+      "semiAlphaRatio": 0.0526,
+      "legacyRegion": [
+        4,
+        4,
+        477,
+        720
+      ],
+      "source": "output/review/2026-11-06-parts-v2/ref/back-view.png",
+      "sha256": "07fad3e33ac93a99bc618d98b755a0aae088eec9c6a01bc790af26c8d0578d8e"
+    }
+  ],
+  "provenance": {
+    "legacyTexture": "assets/characters/deepseek/spine/legacy-views/model.png",
+    "legacyTextureSha256": "372b206cd5560cb3e777204d36fa4933b7854a184207f7e58bad66095f491ef4",
+    "verification": "三张图与 legacy-views 图集 front/side/back region 逐像素相同（RGB 与 alpha 最大绝对差 = 0）",
+    "upstreamSheet": "references/ref-texture2d/ai-chan-sheets/设定图/03_DeepSeek娘_鲸鱼娘/原图切片/横版完整设定图_01_三视图_原图.png",
+    "upstreamNote": "上游设定图只在本机 references/ 保留，不入库；本目录存的是去背后的正/侧/背三张。"
+  }
+}
