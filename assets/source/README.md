@@ -3,8 +3,13 @@
 本目录是「**三视图 → 拆分部件 + 表情差分**」的精细化工作区：放输入基准、切件产出、差分产出，
 以及每批素材的注册信息（`manifest.json`）。后续调部件边界、补遮挡、加表情档位，都在这里做与核对。
 
-**当前状态（2026-11-02）**：按重做要求，上一版拆件（`parts/`）与表情差分（`expressions/`）已清空；
-`three-view/` 作为输入基准保留。重做产物按下方布局写回，并各自生成 `manifest.json`。
+**当前状态（2026-11-02）**：
+
+- `deepseek/`：按重做要求，上一版拆件（`parts/`）与表情差分（`expressions/`）已清空；
+  `three-view/` 保留为输入基准，拆件 / 差分待重做。
+- `doubao/`：三视图（正 / 侧 / 背 + 原图）已入库；拆件与表情差分未开始（本轮只做三视图）。
+
+重做产物按下方布局写回，并各自生成 `manifest.json`。
 
 **不是运行时资源**：运行时只读 `assets/characters/deepseek/` 下的 Spine 图集（`spine/model.*`）；
 本目录不参与加载，也不进任何角色的 ZIP 包。
@@ -14,36 +19,47 @@
 ```text
 assets/source/
 ├── README.md
-└── deepseek/
-    ├── three-view/                 # 输入：三视图源（正 / 侧 / 背）—— 保留
-    │   ├── front.png               # 545×720 RGBA
-    │   ├── side.png                # 487×720 RGBA
-    │   ├── back.png                # 477×720 RGBA
-    │   └── manifest.json           # 尺寸 / sha256 / 与 legacy 图集的 region 对照
-    ├── parts/                      # 待重做：拆件
-    │   ├── master.png              # 切件母版（去背，1×）
-    │   ├── labels.png              # 部件归属标签图（诊断 / 复切用，可选）
-    │   ├── 1x/                     # 每件 1× 直切（2px padding，贴边件按画布截断）
-    │   ├── rig/                    # 每件 = 当前图集 region 尺寸（生产输入）
-    │   └── manifest.json
-    └── expressions/                # 待重做：表情差分
-        ├── eyes/                   # 眨眼 5 档：0 / 25 / 50 / 75 / 100 %
-        ├── mouth/                  # 口型 5 档：0 / 25 / 50 / 75 / 100 %
-        ├── emotion/                # 情绪 4 张：happy / sad / surprised / focus
-        └── manifest.json
+├── deepseek/
+│   ├── three-view/                 # 输入：三视图源（正 / 侧 / 背）
+│   │   ├── front.png / side.png / back.png
+│   │   └── manifest.json           # 尺寸 / 裁剪框 / sha256 / 与 legacy 图集的 region 对照
+│   ├── parts/                      # 待重做：拆件
+│   │   ├── master.png              # 切件母版（去背，1×）
+│   │   ├── labels.png              # 部件归属标签图（诊断 / 复切用，可选）
+│   │   ├── 1x/                     # 每件 1× 直切（2px padding，贴边件按画布截断）
+│   │   ├── rig/                    # 每件 = 当前图集 region 尺寸（生产输入）
+│   │   └── manifest.json
+│   └── expressions/                # 待重做：表情差分
+│       ├── eyes/                   # 眨眼 5 档：0 / 25 / 50 / 75 / 100 %
+│       ├── mouth/                  # 口型 5 档：0 / 25 / 50 / 75 / 100 %
+│       ├── emotion/                # 情绪 4 张：happy / sad / surprised / focus
+│       └── manifest.json
+└── doubao/
+    └── three-view/                 # 本轮新增：三视图
+        ├── front.png               # 187×654 RGBA（1× 原生裁切）
+        ├── side.png                # 152×652 RGBA
+        ├── back.png                # 185×649 RGBA
+        ├── source.jpg              # 用户提供的原始三视图（1280×720，含浅蓝底）
+        └── manifest.json           # 尺寸 / 裁剪框 / 背景键参数 / sha256
+    # parts/ 与 expressions/ 未开始
 ```
 
 ## 输入：`three-view/`
 
-去背后的正 / 侧 / 背三张，与 `assets/characters/deepseek/spine/legacy-views/model.png` 图集的
-`front` / `side` / `back` region **逐像素相同**（RGB 与 alpha 最大绝对差 = 0），校验值与 sha256
-见 [manifest.json](<assets/source/deepseek/three-view/manifest.json>)。
+每个角色一套**去背的正 / 侧 / 背**（RGBA 透明底），1× 原生裁切、不缩放；尺寸、源图裁剪框与
+sha256 都写在各自的 `three-view/manifest.json`。
 
-- 用途：重做拆件时的比例、层序与遮挡参考；`hair-back` 就是从背视图直切后再按正面语义截断的。
-- 上游原图（横版完整设定图）只在本机 `references/` 保留，不入库；本目录存的是可直接用的去背版。
-- 如果重做时要换三视图，先替换这三张并更新 `three-view/manifest.json`，再动拆件。
+- **deepseek**：三张与 `assets/characters/deepseek/spine/legacy-views/model.png` 图集的
+  `front` / `side` / `back` region **逐像素相同**（RGB 与 alpha 最大绝对差 = 0）；上游横版设定图
+  只在本机 `references/` 保留。
+- **doubao**：从用户提供的 1280×720 三视图（`source.jpg`）按浅蓝底色度键去背，地面蓝色软阴影一并
+  移除；三张为原生 1× 裁切，正 / 侧 / 背的比例有轻微差异（渲染姿态不同），未做统一缩放。
+- 用途：拆件时的比例、层序与遮挡参考；`hair-back` 就是从背视图直切后再按正面语义截断的。
+- 换三视图时：先替换三张并更新该角色的 `three-view/manifest.json`，再动拆件。
 
 ## 待重做：`parts/`
+
+适用于各角色（deepseek 待重做；doubao 未开始）：
 
 | 文件 / 目录 | 内容 | 验收 |
 | --- | --- | --- |
@@ -134,10 +150,12 @@ cd output/work/parts-v2 && python3 scripts/compose.py \
 
 ## 历史
 
-上一版（parts-v2 / expr-v2）的源文件已按 2026-11-02 要求清理；验收报告
-`output/review/2026-11-06-parts-v2/final-report.md`（本地）保留作对照，不作为当前真值。
+- 2026-11-02：doubao 三视图入库（只做三视图，拆件 / 差分未开始；素材由用户提供，出处与授权待补）。
+- 2026-11-02：deepseek 上一版（parts-v2 / expr-v2）源文件已按重做要求清理；验收报告
+  `output/review/2026-11-06-parts-v2/final-report.md`（本地）保留作对照，不作为当前真值。
 
 ## 许可
 
 角色素材沿用 **CC BY-NC-SA 4.0**（非官方同人，禁止商用，演绎同许可）。
-署名与来源链见 [`../characters/deepseek/ATTRIBUTION.md`](../characters/deepseek/ATTRIBUTION.md)。
+deepseek 的署名与来源链见 [`../characters/deepseek/ATTRIBUTION.md`](../characters/deepseek/ATTRIBUTION.md)；
+doubao 素材目前只有用户提供的三视图，出处与授权需在正式打包前补齐。
