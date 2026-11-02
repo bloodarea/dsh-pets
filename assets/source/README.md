@@ -46,12 +46,13 @@ assets/source/
 
 ## 输入：`three-view/`
 
-每个角色一套**去背的正 / 侧 / 背**（RGBA 透明底），1× 原生裁切、不缩放；尺寸、源图裁剪框与
-sha256 都写在各自的 `three-view/manifest.json`。
+每个角色一套**去背的正 / 侧 / 背**（RGBA 透明底），原生裁切、不缩放；各视图分辨率可以不同，
+尺寸、源图裁剪框与 sha256 都写在各自的 `three-view/manifest.json`。
 
-- **deepseek**：三张与 `assets/characters/deepseek/spine/legacy-views/model.png` 图集的
-  `front` / `side` / `back` region **逐像素相同**（RGB 与 alpha 最大绝对差 = 0）；上游横版设定图
-  只在本机 `references/` 保留。
+- **deepseek**：`side` / `back` 与 `legacy-views` 图集对应 region **逐像素相同**；`front` 已替换为
+  用户提供的高清正面立绘（1091×1442，同一张立绘的 2× 版；主体 alpha≈253 属导出特性）。
+  三视图分辨率不一致——拆件以 `front` 为母版，侧 / 背只作比例与遮挡参考；上游横版设定图只在本机
+  `references/` 保留。
 - **doubao**：从用户提供的 1280×720 三视图（`source.jpg`）按浅蓝底色度键去背，地面蓝色软阴影一并
   移除；三张为原生 1× 裁切，正 / 侧 / 背的比例有轻微差异（渲染姿态不同），未做统一缩放。
 - 用途：拆件时的比例、层序与遮挡参考；`hair-back` 就是从背视图直切后再按正面语义截断的。
@@ -150,6 +151,7 @@ cd output/work/parts-v2 && python3 scripts/compose.py \
 
 ## 历史
 
+- 2026-11-02：deepseek 正面立绘替换为 2× 高清版（1091×1442，用户提供），manifest 已同步；侧 / 背暂未替换。
 - 2026-11-02：doubao 三视图入库（只做三视图，拆件 / 差分未开始；素材由用户提供，出处与授权待补）。
 - 2026-11-02：deepseek 上一版（parts-v2 / expr-v2）源文件已按重做要求清理；验收报告
   `output/review/2026-11-06-parts-v2/final-report.md`（本地）保留作对照，不作为当前真值。
