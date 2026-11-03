@@ -1,13 +1,13 @@
 {
   "character_id": "deepseek",
-  "character_name": "DeepSeek 娘",
+  "character_name": "鲸鱼娘",
   "language": "zh-CN",
   "voice_profile": "社区二创鲸鱼娘 / 蓝色大肥鱼：活泼聪明、有点懒、傲娇嘴硬、怕被叫胖；爱白饭与不锈钢盆，擅长为摸鱼找理由，实则会认真响应主人的工作委托。中文少女声线，轻快自然，带少量停顿、嘟囔、鼓脸感；避免每句都尖叫或都撒娇。工作状态必须准确，调侃不应掩盖失败、超时和待授权。",
   "usage": "开发期离线批量生成固定语音文件，运行时根据 DSH 事件选择播放；非实时 TTS。",
   "audio_format": "ogg",
   "line_count": 48,
   "notes": [
-    "本文件基于 DeepSeek 原始48条角色音频清单修改：所有 id、category、event、audio_file、auto_play 和 animation 保持兼容。",
+    "本文件基于社区二创角色的原始48条角色音频清单修改：所有 id、category、event、audio_file、auto_play 和 animation 保持兼容。",
     "全部台词为非官方原创二创，灵感来自鲸鱼娘社区梗图：蓝色大肥鱼、吃白饭、头顶不锈钢盆、深度睡眠、测完叫我、摸鱼与嘴硬。",
     "梗图中的原话、来源故事不代表官方人格设定；角色素材及画师作品另须独立核实授权。",
     "台词中的任务成功、失败、超时、授权和连接状态必须基于 DSH 真实事件，不能因为台词幽默就误报。",

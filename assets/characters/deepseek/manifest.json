@@ -3,8 +3,8 @@
   "id": "deepseek",
   "version": "0.1.0",
   "displayName": {
-    "en": "DeepSeek",
-    "zh": "DeepSeek"
+    "en": "Whale Girl",
+    "zh": "鲸鱼娘"
   },
   "description": {
     "en": "Bundled default companion.",
@@ -36,10 +36,10 @@
   "preview": "preview.webp",
   "states": {
     "idle": "idle",
-    "working": "run",
-    "attention": "alert",
-    "done": "happy",
-    "failed": "sad"
+    "working": "working",
+    "attention": "attention",
+    "done": "done",
+    "failed": "failed"
   },
   "voice": {
     "index": "voice/index.json"
