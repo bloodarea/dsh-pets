@@ -52,9 +52,6 @@
         <svg class="ic" aria-hidden="true"><use href="#i-zoom-in"></use></svg>
       </button>
     </div>
-    <button id="btnPanel" class="btn" type="button" aria-pressed="true" title="显示 / 隐藏右侧面板（窄屏为抽屉）">
-      <svg class="ic" aria-hidden="true"><use href="#i-panel"></use></svg><span>面板</span>
-    </button>
     <span class="vsep" aria-hidden="true"></span>
     <div class="layers" role="group" aria-label="显示层（可多选）">
       <label class="layer" title="显示角色贴图；贴图只影响显示，不勾也能选中/拖动部件">
@@ -88,6 +85,12 @@
     </label>
     <!-- 载入只接受一个 index.json（契约 §2.2）；模型/图集/贴图由索引读取 -->
     <input id="files" type="file" accept=".json" hidden>
+    <!-- 语音包：期望文件名 index.json；手动选择不继承包根（契约 §2.1 / Lead 裁决 2） -->
+    <input id="voiceFiles" type="file" accept=".json,application/json" hidden>
+    <!-- 面板开关：视图条最右端，只负责「展开」；面板内顶部有「收起」（窄屏抽屉同理） -->
+    <button id="btnPanel" class="btn panel-open-btn" type="button" aria-pressed="false" aria-controls="inspector" title="展开右侧面板（窄屏为抽屉）">
+      <svg class="ic" aria-hidden="true"><use href="#i-panel"></use></svg><span>展开</span>
+    </button>
   </div>
 </header>
 
@@ -143,6 +146,19 @@
   </div>
 
   <aside id="inspector" class="inspector" aria-label="部件与检查器">
+    <div class="inspector-bar">
+      <div class="inspector-tabs" role="tablist" aria-label="侧栏分页">
+        <button id="tabParts" class="inspector-tab" type="button" role="tab" aria-selected="true" aria-controls="partsView">部件</button>
+        <button id="tabEvents" class="inspector-tab" type="button" role="tab" aria-selected="false" aria-controls="eventPanel">
+          <span>事件</span><span id="eventTabBadge" class="tab-badge" hidden>0</span>
+        </button>
+      </div>
+      <span class="spacer"></span>
+      <button id="btnPanelClose" class="btn btn-sm" type="button" title="收起右侧面板（窄屏关闭抽屉）">
+        <svg class="ic" aria-hidden="true"><use href="#i-panel"></use></svg><span>收起</span>
+      </button>
+    </div>
+    <div id="partsView" class="parts-view" role="tabpanel" aria-labelledby="tabParts">
     <section class="panel panel-list">
       <header class="panel-hd">
         <h2>部件 <span id="slotCount" class="count">0</span></h2>
@@ -152,6 +168,14 @@
           <span id="searchCount" class="search-count" hidden></span>
         </div>
       </header>
+      <div class="list-view-tabs" role="tablist" aria-label="部件列表视图">
+        <button id="tabListOrder" class="inspector-tab list-view-tab" type="button" role="tab" aria-selected="true" data-view="order">
+          <svg class="ic" aria-hidden="true"><use href="#i-layers"></use></svg><span>显示顺序</span>
+        </button>
+        <button id="tabListTree" class="inspector-tab list-view-tab" type="button" role="tab" aria-selected="false" data-view="tree">
+          <svg class="ic" aria-hidden="true"><use href="#i-bone"></use></svg><span>骨骼层级</span>
+        </button>
+      </div>
       <p id="listEmpty" class="empty-note">载入后在这里选件；列表按绘制层级排列，上方在最前。</p>
       <div id="list" class="slot-list" role="listbox" aria-label="部件列表，上方在前"></div>
     </section>
@@ -274,6 +298,62 @@
         </section>
       </div>
     </div>
+    </div><!-- /#partsView -->
+
+    <!-- 事件分页（契约 §2.2；右侧 320px 单栏，不再用弹窗） -->
+    <section id="eventPanel" class="event-panel" role="tabpanel" aria-labelledby="tabEvents" hidden>
+      <!-- 手动选择索引（无包根）时：提示 + 包根输入 -->
+      <div id="voiceRootHost" class="voice-root-host" hidden></div>
+
+      <!-- 索引警告：只展示 voice.js 的解析警告，不参与事件异常判断 -->
+      <div id="voiceIssues" class="voice-issues" hidden>
+        <div class="voice-issues-hd">
+          <svg class="ic" aria-hidden="true"><use href="#i-alert"></use></svg>
+          <span id="voiceIssuesTitle">索引警告</span>
+          <span class="spacer"></span>
+          <button id="voiceIssuesToggle" class="btn btn-sm" type="button">收起</button>
+        </div>
+        <ul id="voiceIssueList" class="voice-issue-list"></ul>
+      </div>
+
+      <div class="voice-summary">
+        <span id="voiceSummaryText" class="voice-summary-text" aria-live="polite">未载入语音包</span>
+        <div class="voice-tools">
+          <select id="voiceStatusFilter" aria-label="按状态筛选事件" title="按状态筛选事件">
+            <option value="all">全部</option>
+            <option value="audio-missing">仅语音缺失</option>
+            <option value="anim-unmapped">仅动画未映射</option>
+            <option value="pending">仅未检查</option>
+            <option value="ok">仅正常</option>
+          </select>
+          <label class="toggle" title="播放台词时联动主编辑器动画（动画未映射时只播语音）">
+            <input id="voiceLinkAnim" type="checkbox" checked><span>联动</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="event-search">
+        <div class="search-wrap">
+          <svg class="ic" aria-hidden="true"><use href="#i-search"></use></svg>
+          <input id="voiceSearch" type="search" placeholder="搜索事件 / 台词 id / 原文 / 动画" autocomplete="off" aria-label="搜索语音事件">
+          <span id="voiceSearchCount" class="search-count" hidden></span>
+        </div>
+        <div id="voiceChips" class="chips" role="group" aria-label="按分类筛选"></div>
+        <div id="voiceEmpty" class="voice-empty" hidden></div>
+      </div>
+
+      <div id="voiceEventList" class="voice-events" role="list"></div>
+
+      <div class="voice-playbar">
+        <span id="voiceNow" class="voice-now dim" title="当前播放">未播放</span>
+        <span id="voiceHint" class="voice-hint dim" aria-live="polite"></span>
+        <input id="voiceSeek" type="range" min="0" max="1000" value="0" disabled aria-label="语音进度">
+        <span id="voiceTime" class="time-label">0.00 / 0.00 s</span>
+        <button id="voiceStop" class="btn btn-sm" type="button" disabled title="停止语音">
+          <svg class="ic" aria-hidden="true"><use href="#i-stop"></use></svg><span>停止</span>
+        </button>
+      </div>
+    </section>
 
     <div class="foot">
       <span id="footDirty">无未保存改动</span>
@@ -321,6 +401,9 @@
 </footer>
 
 <div id="backdrop" class="backdrop" aria-hidden="true"></div>
+
+<!-- 单实例语音播放器（切走事件分页时停止；不放在 hidden 容器里） -->
+<audio id="voiceAudio" preload="metadata"></audio>
 
 <div id="helpOverlay" class="modal" role="dialog" aria-modal="true" aria-labelledby="helpTitle" hidden>
   <div class="modal-card">
@@ -382,6 +465,7 @@
 <script src="icons.js"></script>
 <script src="spine-core.js"></script>
 <script src="bundle.js"></script>
+<script src="voice.js"></script>
 <script src="fixtures/cases.js"></script>
 <script src="app.js"></script>
 </body>

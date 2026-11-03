@@ -77,6 +77,8 @@
     hidden: new Set(),
     locked: new Set(),
     search: "",
+    listView: "order",
+    collapsed: new Set(),
 
     dirty: false,
     undo: [],
@@ -112,6 +114,44 @@
     saveBusy: false,
     zipBusy: false,
     loadGen: 0,
+
+    /* 事件 · 语音测试（docs/review/2026-11-04-voice-editor/contract.md §2） */
+    voice: {
+      open: false,
+      explicitRequest: null, // ?voice= 原文；init 最前锁定，自动发现永不覆盖（含显式失败）
+      provenance: null, // "explicit" | "auto" | "manual" | null
+      indexPath: null, // 仓库相对索引路径；手动文件载入为 null
+      packRoot: null, // 仓库相对语音包根；null = 音频未解析
+      packRootSource: null, // "derived" | "bundle" | "manual"
+      rootDraft: "", // 手动包根输入草稿（重渲染不丢）
+      voice: null, // voice.js validateIndex 的 value
+      events: [],
+      summary: null,
+      issues: [], // 解析/评估警告（浮层顶部单独展示，不算事件异常）
+      issuesOpen: true,
+      animations: null, // string[] | null（未载入模型）
+      audio: Object.create(null), // audioFile -> checking|ok|missing|unknown
+      audioDetail: Object.create(null),
+      loadState: "idle", // idle | loading | ready | error
+      error: null, // {message, issues, provenance, indexPath}
+      autoProbeBusy: false,
+      autoProbeFailed: false,
+      checking: false,
+      loadGen: 0, // 语音索引载入代（旧索引/旧探测迟到保护）
+      checkGen: 0, // HEAD 探测代
+      playGen: 0, // 播放 Promise / 媒体事件代
+      expanded: new Set(), // 保持展开状态（默认全折叠）
+      selected: null, // 选中事件名
+      search: "",
+      category: "all", // "all" | CATEGORIES
+      statusFilter: "all", // all | audio-missing | anim-unmapped | pending | ok
+      linkAnimation: true, // 「联动动画」复选框（默认开）
+      lineErrors: Object.create(null), // 行内播放失败提示（按台词 id）
+      hint: "", // 浮层内最近一次播放/联动提示
+      hintKind: "",
+      play: { event: null, id: null, audioFile: null, url: null, playing: false, duration: 0, error: null },
+      renderTimer: 0,
+    },
   };
 
   const cv = $("cv");
@@ -202,6 +242,7 @@
     state.hidden = new Set();
     state.locked = new Set();
     state.search = "";
+    state.collapsed = new Set();
     state.undo = [];
     state.dirty = false;
     state.anim = "";
@@ -226,6 +267,7 @@
     fitView("all");
     setStatus("已载入 " + state.slots.length + " 部件 / " + state.boneList.length + " 骨骼 · " + state.label);
     render();
+    onModelChanged();
     return true;
   }
 
@@ -1335,7 +1377,8 @@
     const att = state.frame ? attachmentAt(state.frame.pose, slotIndex) : null;
     if (att && att.weighted) return "加权网格由多根骨骼共同控制，位置只读（可改旋转/缩放看变形）";
     for (const c of state.constraints) {
-      if (c.bones.indexOf(slot.boneIndex) >= 0) return "该骨受 IK 约束（" + c.name + "）：请移动 IK target 骨";
+      // mix=0 的 IK 约束不参与求值（等价于未绑定），此时允许直接摆位；mix>0 才要求先动 target。
+      if (c.bones.indexOf(slot.boneIndex) >= 0 && c.mix > 0) return "该骨受 IK 约束（" + c.name + "）：请移动 IK target 骨";
     }
     return "";
   }
@@ -1428,6 +1471,8 @@
     const next = [];
     for (const n of snap.o) if (byName[n]) next.push(byName[n]);
     if (next.length === snap.o.length) state.slots = next;
+    syncSlotOrderToModel();
+    if (state.model) framePose();
     if (state.sel >= state.slots.length) state.sel = state.slots.length - 1;
   }
   function pushUndo(snap) {
@@ -1502,6 +1547,7 @@
     arr.splice(target, 0, moved);
     state.sel = target;
     commit(before);
+    framePose();
     syncAll();
     render();
   }
@@ -1665,10 +1711,14 @@
     $("btnFit").disabled = !loaded;
     $("btnZoomIn").disabled = !loaded;
     $("btnZoomOut").disabled = !loaded;
-    if ($("btnPanel")) $("btnPanel").disabled = false;
     syncZoom();
     syncAnimSelect();
+    syncVoiceBadge();
     syncMenus();
+  }
+  function slotHay(slot, att) {
+    const attName = (att && (att.path || slot.attachment)) || slot.attachment || slot.name;
+    return (slot.name + " " + attName + " " + slot.boneName).toLowerCase();
   }
   function syncList() {
     const box = $("list");
@@ -1676,57 +1726,297 @@
     $("slotCount").textContent = String(state.slots.length);
     $("listEmpty").hidden = state.slots.length > 0;
     const q = state.search.trim().toLowerCase();
-    const frame = state.frame;
-    let shown = 0;
-    for (let i = state.slots.length - 1; i >= 0; i--) {
-      const slot = state.slots[i];
-      const att = frame ? attachmentAt(frame.pose, i) : null;
-      const attName = (att && (att.path || slot.attachment)) || slot.attachment || slot.name;
-      const hay = (slot.name + " " + attName + " " + slot.boneName).toLowerCase();
-      if (q && hay.indexOf(q) < 0) continue;
-      shown++;
-      const row = el("div", "slot-row");
-      row.setAttribute("role", "option");
-      row.setAttribute("aria-selected", i === state.sel ? "true" : "false");
-      row.tabIndex = 0;
-      row.dataset.index = String(i);
-      if (state.hidden.has(slot.name)) row.classList.add("is-hidden");
-      row.appendChild(el("span", "slot-idx", String(i)));
-      row.appendChild(el("span", "slot-name", attName));
-      if (String(slot.boneName).toLowerCase() !== String(attName).toLowerCase()) {
-        row.appendChild(el("span", "slot-bone", slot.boneName));
-      }
-      if (state.locked.has(slot.name)) {
-        const lk = el("span", "slot-lock");
-        lk.title = "已锁定";
-        lk.appendChild(iconEl("lock"));
-        row.appendChild(lk);
-      }
-      const eye = el("button", "slot-eye");
-      eye.type = "button";
-      eye.innerHTML = icon(state.hidden.has(slot.name) ? "eye-off" : "eye");
-      eye.title = state.hidden.has(slot.name) ? "显示该部件" : "隐藏该部件";
-      eye.setAttribute("aria-label", eye.title + "：" + slot.name);
-      eye.addEventListener("click", (e) => {
-        e.stopPropagation();
-        toggleHidden(i);
-      });
-      row.appendChild(eye);
-      row.addEventListener("click", () => selectSlot(i));
-      row.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          selectSlot(i);
-        }
-      });
-      box.appendChild(row);
-    }
+    const tree = state.listView === "tree";
+    box.setAttribute("role", tree ? "tree" : "listbox");
+    box.setAttribute("aria-label", tree ? "部件列表（骨骼层级）" : "部件列表，上方在前");
+    box.classList.toggle("is-order", !tree);
+    $("listEmpty").textContent = tree
+      ? "按骨骼父子层级排列：点箭头折叠/展开，左侧数字是显示顺序。"
+      : "按显示顺序排列，上方在最前；拖拽行可调整显示顺序（也可用上移/下移）。";
+    syncListView();
+    const shown = tree ? renderPartsTree(box, q) : renderPartsOrder(box, q);
     const sc = $("searchCount");
     if (q) {
       sc.hidden = false;
       sc.textContent = shown + "/" + state.slots.length;
     } else sc.hidden = true;
   }
+  function appendSlotRow(box, i, depth) {
+    const slot = state.slots[i];
+    const frame = state.frame;
+    const att = frame ? attachmentAt(frame.pose, slot.index) : null;
+    const attName = (att && (att.path || slot.attachment)) || slot.attachment || slot.name;
+    const tree = state.listView === "tree";
+    const row = el("div", "slot-row");
+    row.setAttribute("role", tree ? "treeitem" : "option");
+    row.setAttribute("aria-selected", i === state.sel ? "true" : "false");
+    if (tree) {
+      row.setAttribute("aria-level", String((depth || 0) + 1));
+      row.style.paddingLeft = (4 + (depth || 0) * 12 + 18) + "px";
+    }
+    row.tabIndex = 0;
+    row.dataset.index = String(i);
+    if (state.hidden.has(slot.name)) row.classList.add("is-hidden");
+    row.appendChild(el("span", "slot-idx", String(i)));
+    row.appendChild(el("span", "slot-name", attName));
+    if (String(slot.boneName).toLowerCase() !== String(attName).toLowerCase()) {
+      row.appendChild(el("span", "slot-bone", slot.boneName));
+    }
+    if (state.locked.has(slot.name)) {
+      const lk = el("span", "slot-lock");
+      lk.title = "已锁定";
+      lk.appendChild(iconEl("lock"));
+      row.appendChild(lk);
+    }
+    const eye = el("button", "slot-eye");
+    eye.type = "button";
+    eye.innerHTML = icon(state.hidden.has(slot.name) ? "eye-off" : "eye");
+    eye.title = state.hidden.has(slot.name) ? "显示该部件" : "隐藏该部件";
+    eye.setAttribute("aria-label", eye.title + "：" + slot.name);
+    eye.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleHidden(i);
+    });
+    row.appendChild(eye);
+    row.addEventListener("click", () => {
+      if (state.suppressClick) return;
+      selectSlot(i);
+    });
+    row.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        selectSlot(i);
+      }
+    });
+    if (!tree) attachOrderDrag(row, i);
+    box.appendChild(row);
+    return row;
+  }
+  /** 显示顺序视图：拖拽行调整 z 序（仅 order 视图、且当前动画无 drawOrder 轨道） */
+  function attachOrderDrag(row, index) {
+    row.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0 || e.target.closest(".slot-eye")) return;
+      if (state.listView !== "order" || drawOrderLocked()) return;
+      const startY = e.clientY;
+      let dragging = false;
+      let over = null;
+      let after = false;
+      const move = (ev) => {
+        if (!dragging) {
+          if (Math.abs(ev.clientY - startY) < 6) return;
+          dragging = true;
+          row.classList.add("is-dragging");
+          document.body.classList.add("is-reordering");
+        }
+        ev.preventDefault();
+        const el = document.elementFromPoint(ev.clientX, ev.clientY);
+        const hit = el && el.closest ? el.closest("#list .slot-row") : null;
+        if (over && over !== hit) over.classList.remove("drop-before", "drop-after");
+        over = hit && hit !== row ? hit : null;
+        if (over) {
+          const r = over.getBoundingClientRect();
+          after = ev.clientY > r.top + r.height / 2;
+          over.classList.remove("drop-before", "drop-after");
+          over.classList.add(after ? "drop-after" : "drop-before");
+        }
+      };
+      const end = (ev) => {
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", end);
+        window.removeEventListener("pointercancel", end);
+        if (over) over.classList.remove("drop-before", "drop-after");
+        row.classList.remove("is-dragging");
+        document.body.classList.remove("is-reordering");
+        if (!dragging) return;
+        state.suppressClick = true;
+        setTimeout(() => {
+          state.suppressClick = false;
+        }, 0);
+        if (over) reorderSlotDisplay(index, Number(over.dataset.index), after);
+        else {
+          const box = $("list").getBoundingClientRect();
+          if (ev.clientY > box.bottom - 4) reorderSlotDisplay(index, "bottom");
+          else if (ev.clientY < box.top + 4) reorderSlotDisplay(index, "top");
+        }
+      };
+      window.addEventListener("pointermove", move, { passive: false });
+      window.addEventListener("pointerup", end);
+      window.addEventListener("pointercancel", end);
+    });
+  }
+  /** 把 state.slots 的新顺序同步进 model.slots / slotIndex / skin.attachments，保证预览与拾取同步 */
+  function syncSlotOrderToModel() {
+    const model = state.model;
+    if (!model) return;
+    const nameToOld = new Map(model.slots.map((s, i) => [s.name, i]));
+    const newToOld = state.slots.map((s) => nameToOld.get(s.name));
+    const identity = newToOld.every((v, i) => v === i);
+    if (identity) {
+      state.slots.forEach((s, i) => {
+        s.index = i;
+      });
+      return;
+    }
+    const oldToNew = new Map();
+    newToOld.forEach((o, n) => oldToNew.set(o, n));
+    const oldSlots = model.slots.slice();
+    model.slots = newToOld.map((o) => oldSlots[o]);
+    model.slotIndex = new Map(model.slots.map((s, i) => [s.name, i]));
+    for (const skin of model.skins.values()) {
+      const next = new Map();
+      for (const [oldIdx, bag] of skin.attachments) {
+        const ni = oldToNew.get(oldIdx);
+        if (ni === undefined) continue;
+        next.set(ni, bag);
+        for (const att of bag.values()) if (att) att.slotIndex = ni;
+      }
+      skin.attachments = next;
+    }
+    state.slots.forEach((s, i) => {
+      s.index = i;
+    });
+  }
+  /** 拖拽落点：from/to 都是 state.slots 下标；to=null 表示拖到列表末尾（最底层） */
+  function reorderSlotDisplay(from, to, after) {
+    const n = state.slots.length;
+    if (n < 2) return;
+    const disp = [];
+    for (let i = n - 1; i >= 0; i--) disp.push(i);
+    const fromPos = disp.indexOf(from);
+    if (fromPos < 0) return;
+    const moved = state.slots[from];
+    const movedAt = disp.splice(fromPos, 1)[0];
+    let pos;
+    if (to === "top") pos = 0;
+    else if (to === "bottom") pos = disp.length;
+    else {
+      pos = disp.indexOf(to);
+      if (pos < 0) pos = disp.length;
+      if (after) pos += 1;
+      if (pos === fromPos) return;
+    }
+    disp.splice(pos, 0, movedAt);
+    const before = snapshot();
+    state.slots = disp.slice().reverse().map((i) => state.slots[i]);
+    syncSlotOrderToModel();
+    state.sel = state.slots.findIndex((s) => s.name === moved.name);
+    commit(before);
+    framePose();
+    syncAll();
+    render();
+    setStatus("已调整显示顺序：" + (state.slots[state.sel] ? state.slots[state.sel].name : ""));
+  }
+  function renderPartsOrder(box, q) {
+    let shown = 0;
+    for (let i = state.slots.length - 1; i >= 0; i--) {
+      const slot = state.slots[i];
+      const att = state.frame ? attachmentAt(state.frame.pose, i) : null;
+      if (q && slotHay(slot, att).indexOf(q) < 0) continue;
+      appendSlotRow(box, i, 0);
+      shown++;
+    }
+    return shown;
+  }
+  function renderPartsTree(box, q) {
+    const model = state.model;
+    if (!model) return 0;
+    const nodes = model.bones.map((b, i) => ({ index: i, name: b.name, parent: b.parentIndex, children: [], slots: [] }));
+    for (const s of state.slots) {
+      const n = nodes[s.boneIndex];
+      if (n) n.slots.push(s.index);
+    }
+    for (const n of nodes) if (n.parent >= 0 && nodes[n.parent]) nodes[n.parent].children.push(n);
+    const hasParts = new Map();
+    const calc = (n) => {
+      let v = n.slots.length > 0;
+      for (const c of n.children) if (calc(c)) v = true;
+      hasParts.set(n.index, v);
+      return v;
+    };
+    for (const n of nodes) if (n.parent < 0) calc(n);
+    const visibleSlots = new Set();
+    if (!q) {
+      for (const s of state.slots) visibleSlots.add(s.index);
+    } else {
+      for (const s of state.slots) {
+        const att = state.frame ? attachmentAt(state.frame.pose, s.index) : null;
+        if (slotHay(s, att).indexOf(q) >= 0) visibleSlots.add(s.index);
+      }
+      const force = (n, on) => {
+        const keep = on || n.name.toLowerCase().indexOf(q) >= 0;
+        if (keep) for (const si of n.slots) visibleSlots.add(si);
+        for (const c of n.children) force(c, keep);
+      };
+      for (const n of nodes) if (n.parent < 0) force(n, false);
+    }
+    const hit = new Map();
+    const mark = (n) => {
+      let v = n.slots.some((i) => visibleSlots.has(i));
+      for (const c of n.children) if (mark(c)) v = true;
+      hit.set(n.index, v);
+      return v;
+    };
+    for (const n of nodes) if (n.parent < 0) mark(n);
+    const open = (n) => (q ? true : !state.collapsed.has(n.name));
+    let shown = 0;
+    const renderNode = (n, depth) => {
+      if (!hasParts.get(n.index)) return;
+      if (q && !hit.get(n.index)) return;
+      const kids = n.children.filter((c) => hasParts.get(c.index) && (!q || hit.get(c.index)));
+      const parts = n.slots.filter((i) => !q || visibleSlots.has(i));
+      const expandable = kids.length > 0 || parts.length > 0;
+      const isOpen = open(n);
+      const row = el("div", "bone-row");
+      row.style.paddingLeft = (4 + depth * 12) + "px";
+      row.setAttribute("role", "treeitem");
+      row.setAttribute("aria-level", String(depth + 1));
+      if (expandable) {
+        row.setAttribute("aria-expanded", String(isOpen));
+        row.tabIndex = 0;
+        const tw = el("button", "bone-twisty");
+        tw.type = "button";
+        tw.appendChild(iconEl(isOpen ? "chevron-down" : "chevron-right"));
+        tw.setAttribute("aria-label", (isOpen ? "折叠 " : "展开 ") + n.name);
+        tw.addEventListener("click", (e) => {
+          e.stopPropagation();
+          toggleBone(n.name);
+        });
+        row.appendChild(tw);
+        row.addEventListener("click", () => toggleBone(n.name));
+        row.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            toggleBone(n.name);
+          }
+        });
+      } else {
+        row.appendChild(el("span", "bone-twisty is-leaf"));
+      }
+      row.appendChild(el("span", "bone-name", n.name));
+      if (n.slots.length) row.appendChild(el("span", "bone-count", String(n.slots.length)));
+      box.appendChild(row);
+      if (!isOpen) return;
+      for (const si of parts) {
+        appendSlotRow(box, si, depth + 1);
+        shown++;
+      }
+      for (const c of kids) renderNode(c, depth + 1);
+    };
+    for (const n of nodes) if (n.parent < 0) renderNode(n, 0);
+    return shown;
+  }
+  function toggleBone(name) {
+    if (state.collapsed.has(name)) state.collapsed.delete(name);
+    else state.collapsed.add(name);
+    syncList();
+  }
+  function syncListView() {
+    const tree = state.listView === "tree";
+    const t = $("tabListTree"), o = $("tabListOrder");
+    if (t) t.setAttribute("aria-selected", tree ? "true" : "false");
+    if (o) o.setAttribute("aria-selected", tree ? "false" : "true");
+  }
+
   function selectSlot(i) {
     state.sel = i;
     state.hover = -1;
@@ -2252,6 +2542,1716 @@
   }
 
   /* ==========================================================================
+   * 13b. 事件 · 语音测试浮层
+   *      契约：docs/review/2026-11-04-voice-editor/contract.md §2 / §2.5
+   *      Lead 裁决：语音缺失=红色 error；动画未映射=黄色 warn（不写「包损坏」）；
+   *      未检查/未解析=灰色 unknown；索引警告只在浮层顶部单独展示，不算事件异常。
+   *      数据全部来自 voice.js（window.SpineVoice），本层只做 DOM / fetch / Audio。
+   * ====================================================================== */
+  const VOICE_STATUS_TEXT = { error: "语音缺失", warn: "未映射", unknown: "未检查", ok: "正常" };
+  const VOICE_STATUS_ICON = { error: "alert", warn: "alert", unknown: "info", ok: "target" };
+  const VOICE_CATEGORY_FALLBACK = ["agent", "session", "interaction", "easter_egg"];
+
+  function voiceLib() {
+    return window.SpineVoice || null;
+  }
+
+  function voiceErrText(e) {
+    return (e && (e.message || e.name)) || String(e || "未知错误");
+  }
+
+  function voiceCssEscape(value) {
+    const s = String(value == null ? "" : value);
+    if (window.CSS && typeof window.CSS.escape === "function") return window.CSS.escape(s);
+    return s.replace(/["\\\]]/g, "\\$&");
+  }
+
+  /** 仓库相对路径安全校验（Lead 裁决 3）：% / . 段 / 控制字符 / 协议 / 反斜杠 / ?# 一律拒绝 */
+  function voicePathIssue(p) {
+    if (typeof p !== "string" || !p) return "路径为空";
+    if (p.length > 512) return "路径过长";
+    if (/[\u0000-\u001f\u007f]/.test(p)) return "含控制字符";
+    if (p.indexOf("%") >= 0) return "不接受百分号转义";
+    if (p.indexOf("\\") >= 0) return "不接受反斜杠";
+    if (p.charAt(0) === "/") return "不接受绝对路径";
+    if (/^[a-z][a-z0-9+.-]*:/i.test(p)) return "不接受协议";
+    if (p.indexOf("?") >= 0 || p.indexOf("#") >= 0) return "不接受查询或片段";
+    const segs = p.split("/");
+    for (const seg of segs) {
+      if (!seg) return "路径段为空";
+      if (seg === "." || seg === "..") return "路径段不能是 . 或 ..";
+    }
+    return null;
+  }
+
+  /* --- 状态推导 ---------------------------------------------------------- */
+
+  function voiceEventStatus(ev) {
+    const lines = (ev && ev.lines) || [];
+    if (lines.some((l) => l.audioStatus === "missing")) return "error";
+    if (lines.some((l) => l.animationStatus === "missing")) return "warn";
+    if (
+      lines.some(
+        (l) =>
+          l.audioStatus === "checking" ||
+          l.audioStatus === "unknown" ||
+          l.audioStatus === "unresolved" ||
+          l.animationStatus === "unknown"
+      )
+    ) {
+      return "unknown";
+    }
+    return "ok";
+  }
+
+  function voiceAudioPending(status) {
+    return status === "checking" || status === "unknown" || status === "unresolved";
+  }
+
+  function voiceCounts() {
+    const out = {
+      events: 0,
+      lines: 0,
+      audioMissing: 0,
+      animMissing: 0,
+      pending: 0,
+      errorEvents: 0,
+      warnEvents: 0,
+      unknownEvents: 0,
+      okEvents: 0,
+    };
+    for (const ev of state.voice.events) {
+      out.events++;
+      const lines = ev.lines || [];
+      out.lines += lines.length;
+      for (const line of lines) {
+        if (line.audioStatus === "missing") out.audioMissing++;
+        if (line.animationStatus === "missing") out.animMissing++;
+        // 「未检查」按台词行计数：同一行语音与动画都未知也只算 1 行
+        if (voiceAudioPending(line.audioStatus) || line.animationStatus === "unknown") out.pending++;
+      }
+      const status = voiceEventStatus(ev);
+      if (status === "error") out.errorEvents++;
+      else if (status === "warn") out.warnEvents++;
+      else if (status === "unknown") out.unknownEvents++;
+      else out.okEvents++;
+    }
+    return out;
+  }
+
+  function voiceFindLine(id) {
+    for (const ev of state.voice.events) {
+      for (const line of ev.lines || []) if (line.id === id) return line;
+    }
+    return null;
+  }
+
+  function voiceFindEventOfLine(line) {
+    if (!line) return null;
+    for (const ev of state.voice.events) {
+      if ((ev.lines || []).indexOf(line) >= 0) return ev;
+    }
+    for (const ev of state.voice.events) {
+      if ((ev.lines || []).some((l) => l.id === line.id)) return ev;
+    }
+    return null;
+  }
+
+  function voiceFindEvent(name) {
+    for (const ev of state.voice.events) if (ev.event === name) return ev;
+    return null;
+  }
+
+  function voiceCategories() {
+    const lib = voiceLib();
+    const cats = lib && Array.isArray(lib.CATEGORIES) ? lib.CATEGORIES.slice() : VOICE_CATEGORY_FALLBACK.slice();
+    const seen = new Set(cats);
+    for (const ev of state.voice.events) {
+      for (const cat of ev.categories || []) {
+        if (cat && !seen.has(cat)) {
+          seen.add(cat);
+          cats.push(cat);
+        }
+      }
+    }
+    return cats;
+  }
+
+  function voiceAnimationStatusInEvent(ev, anim) {
+    for (const line of ev.lines || []) if (line.animation === anim) return line.animationStatus;
+    return "unknown";
+  }
+
+  function voiceVisibleEvents() {
+    const v = state.voice;
+    const q = v.search.trim().toLowerCase();
+    return v.events.filter((ev) => {
+      if (v.category !== "all" && (ev.categories || []).indexOf(v.category) < 0) return false;
+      if (!voiceStatusFilterMatch(ev)) return false;
+      if (!q) return true;
+      if (String(ev.event || "").toLowerCase().indexOf(q) >= 0) return true;
+      for (const line of ev.lines || []) {
+        if (String(line.id || "").toLowerCase().indexOf(q) >= 0) return true;
+        if (String(line.text || "").toLowerCase().indexOf(q) >= 0) return true;
+        if (String(line.animation || "").toLowerCase().indexOf(q) >= 0) return true;
+        if (String(line.audioFile || "").toLowerCase().indexOf(q) >= 0) return true;
+      }
+      return false;
+    });
+  }
+
+  function voiceStatusFilterMatch(ev) {
+    const filter = state.voice.statusFilter;
+    if (filter === "all") return true;
+    const lines = ev.lines || [];
+    if (filter === "audio-missing") return lines.some((l) => l.audioStatus === "missing");
+    if (filter === "anim-unmapped") return lines.some((l) => l.animationStatus === "missing");
+    if (filter === "pending") return lines.some((l) => voiceAudioPending(l.audioStatus) || l.animationStatus === "unknown");
+    if (filter === "ok") return voiceEventStatus(ev) === "ok";
+    return true;
+  }
+
+  /* --- 载入 / 自动发现 / 评估 -------------------------------------------- */
+
+  function evaluateVoiceState() {
+    const v = state.voice;
+    const lib = voiceLib();
+    v.animations = state.model && state.model.animations ? Array.from(state.model.animations.keys()) : null;
+    if (!lib || typeof lib.evaluate !== "function" || !v.voice) {
+      v.events = [];
+      v.summary = null;
+      return;
+    }
+    const res = lib.evaluate(v.voice, {
+      animations: v.animations,
+      audio: v.packRoot ? v.audio : null,
+      packRoot: v.packRoot,
+    });
+    if (res && res.ok === true) {
+      v.events = res.value.events;
+      v.summary = res.value.summary;
+    } else {
+      v.events = [];
+      v.summary = null;
+      v.error = {
+        message: "语音资源评估失败：" + issueText(res && res.issues, 3),
+        issues: (res && res.issues) || [],
+        provenance: v.provenance,
+        indexPath: v.indexPath,
+      };
+    }
+  }
+
+  function manualRootForCharacter(characterId) {
+    const base =
+      state.bundle && state.bundle.base ? String(state.bundle.base).replace(/\/+$/, "") : "";
+    if (!base) return { root: null, reason: "当前未载入角色包，手动选择的索引没有包根，音频状态为未解析" };
+    if (!characterId) {
+      return { root: null, reason: "语音包缺少 character_id，无法与角色包目录名匹配，未自动使用包根" };
+    }
+    /* 语音包根 = 角色包里名字等于 character_id 的那个目录（如 base=.../deepseek/spine → .../deepseek），
+       只在 base 自身及祖先里找，不从 character_id 猜路径 */
+    const segs = base.split("/");
+    for (let i = segs.length - 1; i >= 0; i--) {
+      if (segs[i] === characterId) {
+        return { root: segs.slice(0, i + 1).join("/"), reason: "" };
+      }
+    }
+    return {
+      root: null,
+      reason:
+        "语音包 character_id=" +
+        characterId +
+        " 与当前角色包路径 " +
+        base +
+        " 的目录名都不一致，未自动使用包根（不猜路径）",
+    };
+  }
+
+  function clearVoiceFields(opts) {
+    const v = state.voice;
+    const o = opts || {};
+    v.loadGen++;
+    v.checkGen++;
+    stopVoice();
+    v.voice = null;
+    v.events = [];
+    v.summary = null;
+    v.issues = [];
+    v.audio = Object.create(null);
+    v.audioDetail = Object.create(null);
+    v.animations = null;
+    v.selected = null;
+    v.expanded = new Set();
+    v.lineErrors = Object.create(null);
+    v.packRoot = null;
+    v.packRootSource = null;
+    v.indexPath = null;
+    v.provenance = null;
+    v.loadState = "idle";
+    v.error = null;
+    v.autoProbeBusy = false;
+    v.autoProbeFailed = false;
+    v.checking = false;
+    v.hint = "";
+    v.hintKind = "";
+    if (o.reason === "no-base") v.loadState = "idle";
+    refreshVoiceUI();
+  }
+
+  function voiceFailure(message, opts, issues) {
+    const v = state.voice;
+    const o = opts || {};
+    const hasData = !!v.voice;
+    v.loadState = hasData ? "ready" : "error";
+    v.autoProbeBusy = false;
+    v.checking = false;
+    v.error = {
+      message: message,
+      issues: issues || [],
+      provenance: o.provenance || v.provenance,
+      indexPath: o.indexPath || v.indexPath,
+    };
+    if (!hasData) {
+      v.voice = null;
+      v.events = [];
+      v.summary = null;
+      v.issues = issues || [];
+    }
+    if (o.provenance === "auto") {
+      v.autoProbeFailed = true;
+      // 自动探测失败只在浮层空状态说明，不弹红色错误（契约 §2.4）
+      setStatus("未找到可用的语音包（自动查找）", "warn");
+    } else {
+      const source = o.provenance === "explicit" ? "?voice=" : o.provenance === "manual" ? "手动载入" : "重新载入";
+      const kept = hasData ? "（已保留当前语音包：" + (v.indexPath || v.packRoot || "手动选择") + "）" : "";
+      notice("error", source + "语音包失败：" + message + kept);
+      setStatus(source + "语音包失败：" + message, "error");
+    }
+    refreshVoiceUI();
+    return false;
+  }
+
+  function commitVoiceIndex(value, warnings, opts) {
+    const v = state.voice;
+    const o = opts || {};
+    const lib = voiceLib();
+    v.loadGen++; // 提交即生效：之前的在途载入 / 旧失败全部作废
+    const gen = v.loadGen;
+    let packRoot = o.packRoot ? String(o.packRoot) : null;
+    let packRootSource = packRoot ? "derived" : null;
+    if (!packRoot && o.indexPath && lib && typeof lib.derivePackRoot === "function") {
+      const derived = lib.derivePackRoot(o.indexPath);
+      if (derived) {
+        packRoot = derived;
+        packRootSource = "derived";
+      }
+    }
+    if (!packRoot && o.provenance === "manual") {
+      const auto = manualRootForCharacter(value.meta && value.meta.characterId);
+      if (auto.root) {
+        packRoot = auto.root;
+        packRootSource = "bundle";
+      } else if (auto.reason) {
+        warnings.push({ path: "character_id", code: "MANUAL_PACK_ROOT", message: auto.reason });
+      }
+    }
+    if (packRoot) {
+      const bad = voicePathIssue(packRoot);
+      if (bad) {
+        warnings.push({ path: "packRoot", code: "INVALID_PACK_ROOT", message: "包根不可用：" + bad });
+        packRoot = null;
+        packRootSource = null;
+      }
+    }
+    v.voice = value;
+    v.events = value.events;
+    v.issues = warnings;
+    v.indexPath = o.indexPath || null;
+    v.packRoot = packRoot;
+    v.packRootSource = packRootSource;
+    v.provenance = o.provenance || "manual";
+    v.loadState = "ready";
+    v.error = null;
+    v.autoProbeBusy = false;
+    v.autoProbeFailed = false;
+    v.selected = null;
+    v.expanded = new Set();
+    v.lineErrors = Object.create(null);
+    v.audio = Object.create(null);
+    v.audioDetail = Object.create(null);
+    v.checking = false;
+    v.hint = "";
+    v.hintKind = "";
+    if (packRoot) {
+      for (const line of value.lines) v.audio[line.audioFile] = "checking";
+    }
+    evaluateVoiceState();
+    if (packRoot) checkVoiceAudio();
+    else {
+      v.checkGen++;
+      evaluateVoiceState();
+    }
+    refreshVoiceUI();
+    const meta = value.meta || {};
+    const label = meta.characterName || meta.characterId || "语音包";
+    if (o.provenance === "manual") {
+      setStatus(
+        "已载入语音包：" + label + "（手动选择）" + (packRoot ? " · " + packRoot : " · 包根未解析，音频状态为未解析"),
+        packRoot ? "info" : "warn"
+      );
+      if (!packRoot) {
+        notice(
+          "warn",
+          "手动选择的语音索引不含包根（character_id 与当前角色包目录名不一致，或未载入角色包），音频状态为未解析；可在右侧事件分页里填写包根，或改用 ?voice=<仓库相对路径>",
+          []
+        );
+      }
+    } else if (o.provenance === "explicit") {
+      setStatus(
+        "已载入语音包：" + label + (packRoot ? " · " + packRoot : " · 包根未解析，音频状态为未解析"),
+        packRoot ? "info" : "warn"
+      );
+    } else {
+      setStatus("已自动载入语音包：" + label + " · " + (packRoot || o.indexPath || ""), "info");
+    }
+    // 显式 / 手动载入是用户主动行为：直接切到事件分页看结果（自动探测不抢分页）
+    if (o.provenance === "explicit" || o.provenance === "manual") openVoice();
+    return true;
+  }
+
+  function loadVoiceIndexText(text, opts) {
+    const lib = voiceLib();
+    const o = opts || {};
+    if (!lib || typeof lib.parseIndexText !== "function") {
+      return voiceFailure("voice.js 未加载，无法解析语音索引", o, []);
+    }
+    const parsed = lib.parseIndexText(text);
+    if (!parsed || parsed.ok !== true) {
+      return voiceFailure(
+        "语音索引校验失败：" + issueText(parsed && parsed.issues, 3),
+        o,
+        (parsed && parsed.issues) || []
+      );
+    }
+    return commitVoiceIndex(parsed.value, (parsed.issues || []).slice(), o);
+  }
+
+  async function loadVoiceByPath(rawPath, provenance) {
+    const v = state.voice;
+    const path = String(rawPath == null ? "" : rawPath).trim();
+    const prov = provenance || "manual";
+    const bad = voicePathIssue(path);
+    if (bad) return voiceFailure("语音索引路径无效：" + bad + "（" + path + "）", { provenance: prov, indexPath: path });
+    const gen = ++v.loadGen;
+    v.loadState = "loading";
+    v.autoProbeBusy = false;
+    v.autoProbeFailed = false;
+    v.error = null;
+    refreshVoiceUI();
+    let res = null;
+    try {
+      res = await voiceFetchWithTimeout("/" + path, {}, 6000);
+    } catch (e) {
+      if (gen !== v.loadGen) return false;
+      return voiceFailure(
+        "读不到 " + path + "（" + (e && e.name === "AbortError" ? "读取超时" : "网络错误：" + voiceErrText(e)) + "）",
+        { provenance: prov, indexPath: path }
+      );
+    }
+    if (gen !== v.loadGen) return false;
+    if (!res.ok) {
+      return voiceFailure("读不到 " + path + "（HTTP " + res.status + "）", { provenance: prov, indexPath: path });
+    }
+    let text = null;
+    try {
+      text = await res.text();
+    } catch (e) {
+      if (gen !== v.loadGen) return false;
+      return voiceFailure("读取 " + path + " 失败：" + voiceErrText(e), { provenance: prov, indexPath: path });
+    }
+    if (gen !== v.loadGen) return false;
+    return loadVoiceIndexText(text, { indexPath: path, provenance: prov, source: prov });
+  }
+
+  async function loadVoiceFromFile(file) {
+    if (!file) return false;
+    const v = state.voice;
+    const gen = ++v.loadGen;
+    let text = null;
+    try {
+      text = await file.text();
+    } catch (e) {
+      if (gen !== state.voice.loadGen) return false;
+      return voiceFailure("读取文件失败：" + voiceErrText(e), { provenance: "manual", indexPath: null });
+    }
+    if (gen !== state.voice.loadGen) return false;
+    const name = file.name || "index.json";
+    const ok = loadVoiceIndexText(text, { indexPath: null, packRoot: null, provenance: "manual", source: "picker", fileName: name });
+    if (name !== "index.json") {
+      notice("warn", "语音包文件名是 " + name + "（期望 index.json）；已按内容校验，请确认选对了文件。");
+    }
+    return ok;
+  }
+
+  function reloadVoice() {
+    const v = state.voice;
+    if (!v.indexPath) {
+      setStatus("当前语音包是手动选择的文件，没有仓库路径；请用「载入语音包…」重新选择", "warn");
+      return false;
+    }
+    const provenance = v.provenance === "auto" ? "auto" : v.provenance === "manual" ? "manual" : "explicit";
+    return loadVoiceByPath(v.indexPath, provenance);
+  }
+
+  /** 自动发现（Lead 裁决 3）：候选 = base + 最多 3 级祖先；首个 200 即停（索引损坏也不继续向上） */
+  async function probeVoiceCandidates(base, opts) {
+    const lib = voiceLib();
+    const v = state.voice;
+    const o = opts || {};
+    const basePath = String(base || "").replace(/\/+$/, "");
+    const baseBad = voicePathIssue(basePath);
+    if (!lib || typeof lib.voiceIndexCandidates !== "function") {
+      v.autoProbeFailed = true;
+      refreshVoiceUI();
+      return false;
+    }
+    if (baseBad) {
+      v.loadState = v.voice ? "ready" : "idle";
+      v.error = { message: "角色包根不可用，无法自动查找语音包：" + baseBad, issues: [], provenance: "auto", indexPath: null };
+      v.autoProbeFailed = true;
+      refreshVoiceUI();
+      return false;
+    }
+    // 重新探测前先清掉上一个自动发现的包，避免不同模型错配（显式 / 手动包不在此路径）
+    if (v.provenance === "auto" && v.voice) {
+      v.loadGen++;
+      v.checkGen++;
+      stopVoice();
+      v.voice = null;
+      v.events = [];
+      v.summary = null;
+      v.issues = [];
+      v.audio = Object.create(null);
+      v.audioDetail = Object.create(null);
+      v.packRoot = null;
+      v.packRootSource = null;
+      v.indexPath = null;
+      v.provenance = null;
+      v.selected = null;
+      v.expanded = new Set();
+      v.checking = false;
+    }
+    const candidates = lib.voiceIndexCandidates(basePath) || [];
+    const gen = ++v.loadGen;
+    let lastNetworkError = "";
+    v.autoProbeBusy = true;
+    v.autoProbeFailed = false;
+    v.error = null;
+    v.loadState = "loading";
+    refreshVoiceUI();
+    for (const cand of candidates) {
+      if (gen !== v.loadGen) return false;
+      const indexPath = typeof cand === "string" ? cand : (cand && cand.indexPath) || "";
+      const packRoot =
+        typeof cand === "string" ? lib.derivePackRoot(indexPath) : (cand && cand.packRoot) || lib.derivePackRoot(indexPath);
+      if (!indexPath || voicePathIssue(indexPath)) continue;
+      let res = null;
+      try {
+        res = await voiceFetchWithTimeout("/" + indexPath, {}, 6000);
+      } catch (e) {
+        if (gen !== v.loadGen) return false;
+        // 单个候选网络错误/超时：按契约继续下一候选（最终都失败再报）
+        lastNetworkError =
+          (e && e.name === "AbortError" ? "探测超时" : "网络错误") + "：" + voiceErrText(e);
+        continue;
+      }
+      if (gen !== v.loadGen) return false;
+      if (!res.ok) continue; // 非 200：继续上一级祖先
+      let text = null;
+      try {
+        text = await res.text();
+      } catch (e) {
+        if (gen !== v.loadGen) return false;
+        v.autoProbeBusy = false;
+        v.autoProbeFailed = true;
+        v.loadState = v.voice ? "ready" : "error";
+        v.error = {
+          message: "自动发现的语音索引读取失败（" + indexPath + "）：" + voiceErrText(e),
+          issues: [],
+          provenance: "auto",
+          indexPath: indexPath,
+        };
+        refreshVoiceUI();
+        return false;
+      }
+      if (gen !== v.loadGen) return false;
+      v.autoProbeBusy = false;
+      const parsed = lib.parseIndexText(text);
+      if (!parsed || parsed.ok !== true) {
+        // 首个 200 即停：该索引损坏就报出来，不继续向上找别的包
+        v.loadState = v.voice ? "ready" : "error";
+        v.autoProbeFailed = true;
+        v.error = {
+          message:
+            "自动发现的语音索引损坏（" + indexPath + "）：" + issueText(parsed && parsed.issues, 3),
+          issues: (parsed && parsed.issues) || [],
+          provenance: "auto",
+          indexPath: indexPath,
+        };
+        refreshVoiceUI();
+        setStatus("自动发现的语音索引损坏：" + indexPath, "warn");
+        return false;
+      }
+      return commitVoiceIndex(parsed.value, (parsed.issues || []).slice(), {
+        indexPath: indexPath,
+        packRoot: packRoot,
+        provenance: "auto",
+        source: "auto",
+      });
+    }
+    if (gen !== v.loadGen) return false;
+    v.autoProbeBusy = false;
+    v.autoProbeFailed = true;
+    v.loadState = v.voice ? "ready" : "idle";
+    v.error = lastNetworkError
+      ? {
+          message: "自动查找语音包失败：" + lastNetworkError + "（已按角色包根及最多 3 级祖先探测）",
+          issues: [],
+          provenance: "auto",
+          indexPath: null,
+        }
+      : null;
+    refreshVoiceUI();
+    setStatus(
+      lastNetworkError
+        ? "自动查找语音包失败：" + lastNetworkError
+        : "没有找到语音包（已按角色包根及最多 3 级祖先探测）",
+      "warn"
+    );
+    return false;
+  }
+
+  function onModelChanged() {
+    const v = state.voice;
+    const base = state.bundle && state.bundle.base ? String(state.bundle.base) : null;
+    evaluateVoiceState(); // 模型动画清单变化 → 重新评估状态
+    if (v.explicitRequest) {
+      // 显式 ?voice= 锁：自动发现永不覆盖（含显式失败）
+      refreshVoiceUI();
+      return;
+    }
+    if (v.provenance === "manual") {
+      refreshVoiceUI();
+      return;
+    }
+    if (v.provenance === "auto") {
+      if (!base) clearVoiceFields({ reason: "no-base" });
+      else probeVoiceCandidates(base, { automatic: true });
+      refreshVoiceUI();
+      return;
+    }
+    if (base) probeVoiceCandidates(base, { automatic: true });
+    else refreshVoiceUI();
+  }
+
+  /* --- 语音资源 HEAD 探测（并发 ≤ 4 / checkGen） ------------------------- */
+
+  /** 语音相关 fetch 统一超时（6s）：挂起请求不能把「检查中…」/「正在读取…」永久卡住 */
+  async function voiceFetchWithTimeout(url, opts, timeoutMs) {
+    const controller = typeof AbortController === "function" ? new AbortController() : null;
+    const timer = controller
+      ? setTimeout(() => {
+          try {
+            controller.abort();
+          } catch (_) {
+            /* 忽略 */
+          }
+        }, timeoutMs || 6000)
+      : 0;
+    const request = Object.assign({ cache: "no-store" }, opts || {});
+    if (controller) request.signal = controller.signal;
+    try {
+      return await fetch(url, request);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  async function probeVoiceUrl(url) {
+    let res = null;
+    try {
+      res = await voiceFetchWithTimeout(url, { method: "HEAD" }, 6000);
+    } catch (e) {
+      return {
+        status: "unknown",
+        detail: (e && e.name === "AbortError" ? "检查超时" : "网络错误") + "：" + voiceErrText(e),
+      };
+    }
+    if (res.ok) return { status: "ok", detail: "HTTP " + res.status };
+    if (res.status === 404) return { status: "missing", detail: "HTTP 404" };
+    const headStatus = res.status;
+    // 405 / 其它非 2xx：回退 GET 一次（契约 §2.4）
+    let getRes = null;
+    try {
+      getRes = await voiceFetchWithTimeout(url, {}, 6000);
+    } catch (e) {
+      return {
+        status: "unknown",
+        detail:
+          "HEAD " + headStatus + "，GET " + (e && e.name === "AbortError" ? "检查超时" : "网络错误") + "：" + voiceErrText(e),
+      };
+    }
+    if (getRes.ok) return { status: "ok", detail: "HEAD " + headStatus + " → GET " + getRes.status };
+    if (getRes.status === 404) return { status: "missing", detail: "HTTP 404（HEAD " + headStatus + "）" };
+    return { status: "unknown", detail: "HEAD " + headStatus + " → GET " + getRes.status };
+  }
+
+  function checkVoiceAudio() {
+    const lib = voiceLib();
+    const v = state.voice;
+    const gen = ++v.checkGen;
+    v.checking = false;
+    if (!lib || typeof lib.resolveAudioPath !== "function" || !v.voice || !v.packRoot) {
+      evaluateVoiceState();
+      refreshVoiceUI();
+      return;
+    }
+    const files = [];
+    const seen = new Set();
+    for (const line of v.voice.lines) {
+      if (seen.has(line.audioFile)) continue;
+      seen.add(line.audioFile);
+      const resolved = lib.resolveAudioPath(v.packRoot, line.audioFile);
+      const ok = !!(resolved && resolved.ok);
+      files.push({
+        file: line.audioFile,
+        url: ok ? resolved.value.url : null,
+        why: ok ? "" : issueText(resolved && resolved.issues, 1),
+      });
+    }
+    for (const item of files) {
+      if (item.url) {
+        v.audio[item.file] = "checking";
+        v.audioDetail[item.file] = "检查中…";
+      } else {
+        v.audio[item.file] = "unknown";
+        v.audioDetail[item.file] = "语音路径不可用：" + (item.why || "未知原因");
+      }
+    }
+    v.checking = true;
+    evaluateVoiceState();
+    refreshVoiceUI();
+    const queue = files.filter((f) => f.url);
+    if (!queue.length) {
+      v.checking = false;
+      return;
+    }
+    let next = 0;
+    const workers = Math.max(1, Math.min(4, queue.length));
+    const runOne = async () => {
+      while (true) {
+        if (gen !== state.voice.checkGen) return;
+        const item = queue[next++];
+        if (!item) return;
+        const result = await probeVoiceUrl(item.url);
+        if (gen !== state.voice.checkGen) return;
+        state.voice.audio[item.file] = result.status;
+        state.voice.audioDetail[item.file] = result.detail;
+        evaluateVoiceState();
+        scheduleVoiceRefresh();
+      }
+    };
+    const jobs = [];
+    for (let i = 0; i < workers; i++) jobs.push(runOne());
+    Promise.all(jobs)
+      .then(() => {
+        if (gen !== state.voice.checkGen) return;
+        state.voice.checking = false;
+        evaluateVoiceState();
+        refreshVoiceUI();
+        // 检查完成后在状态栏给缺失汇总（Lead 裁决 4：缺失要在状态栏可见，不只浮层）
+        const counts = voiceCounts();
+        if (counts.audioMissing > 0) {
+          setStatus("语音检查完成：" + counts.audioMissing + " 条语音缺失（详见右侧事件分页）", "warn");
+        } else if (counts.animMissing > 0) {
+          setStatus("语音检查完成：" + counts.animMissing + " 条动画未映射（仅播放语音，详见右侧事件分页）", "warn");
+        }
+      })
+      .catch(() => {
+        if (gen !== state.voice.checkGen) return;
+        state.voice.checking = false;
+        refreshVoiceUI();
+      });
+  }
+
+  /* --- 播放（单实例 <audio> / playGen） ---------------------------------- */
+
+  function voiceAudioEl() {
+    return $("voiceAudio");
+  }
+
+  function voiceLineUrl(line) {
+    const lib = voiceLib();
+    const v = state.voice;
+    if (!lib || typeof lib.resolveAudioPath !== "function" || !v.packRoot || !line) return null;
+    const res = lib.resolveAudioPath(v.packRoot, line.audioFile);
+    return res && res.ok ? res.value.url : null;
+  }
+
+  function voiceLinePlayable(line) {
+    if (!line) return false;
+    if (line.audioStatus === "missing" || line.audioStatus === "unresolved") return false;
+    return !!voiceLineUrl(line);
+  }
+
+  function voiceIsCurrent() {
+    const v = state.voice;
+    const a = voiceAudioEl();
+    if (!a || !v.play || !v.play.url) return false;
+    return a.getAttribute("src") === v.play.url;
+  }
+
+  function voiceLineIsPlaying(line) {
+    if (!line || !voiceIsCurrent()) return false;
+    return state.voice.play.id === line.id && state.voice.play.playing;
+  }
+
+  function voiceAudioTitle(line) {
+    const v = state.voice;
+    const detail = v.audioDetail[line.audioFile] || "";
+    if (line.audioStatus === "ok") return "语音：" + line.audioFile + (detail ? "（" + detail + "）" : "");
+    if (line.audioStatus === "missing") return "语音缺失：" + line.audioFile + "（" + (detail || "HTTP 404") + "）";
+    if (line.audioStatus === "unresolved") return "语音未解析：" + line.audioFile + "（缺少语音包根；可用 ?voice= 或填写包根）";
+    if (line.audioStatus === "checking") return "检查中…：" + line.audioFile;
+    return "语音未确认：" + line.audioFile + (detail ? "（" + detail + "）" : "");
+  }
+
+  function voiceAnimationTitle(line) {
+    const v = state.voice;
+    if (line.animationStatus === "ok") return "动画存在：" + line.animation;
+    if (line.animationStatus === "missing") {
+      const list = v.animations && v.animations.length ? v.animations.join(" / ") : "（无）";
+      return "动画未映射：" + line.animation + "（模型无同名动画，需补语义→实际动画映射；模型动画：" + list + "）";
+    }
+    return "未载入角色模型，动画存在性未检查：" + line.animation;
+  }
+
+  function setVoiceHint(text, kind) {
+    const v = state.voice;
+    v.hint = text || "";
+    v.hintKind = kind || "";
+    updateVoicePlaybar();
+  }
+
+  function updateVoicePlaybar() {
+    const v = state.voice;
+    const now = $("voiceNow");
+    if (now) {
+      now.textContent = v.play.url ? (v.play.event ? v.play.event + " · " : "") + (v.play.id || "") : "未播放";
+      now.classList.toggle("error", !!v.play.error);
+    }
+    const hint = $("voiceHint");
+    if (hint) {
+      hint.textContent = v.hint || "";
+      hint.className = "voice-hint" + (v.hintKind ? " " + v.hintKind : " dim");
+      hint.title = v.hint || "";
+    }
+    const stop = $("voiceStop");
+    if (stop) stop.disabled = !v.play.url;
+  }
+
+  function syncVoicePlayUI() {
+    const v = state.voice;
+    updateVoicePlaybar();
+    for (const btn of $$(".voice-line-play")) {
+      const row = btn.closest(".voice-line");
+      const id = row && row.dataset.id;
+      const line = id ? voiceFindLine(id) : null;
+      const playing = line ? voiceLineIsPlaying(line) : false;
+      btn.innerHTML = icon(playing ? "pause" : "play");
+      btn.classList.toggle("on", playing);
+      btn.setAttribute("aria-pressed", playing ? "true" : "false");
+    }
+    const stop = $("voiceStop");
+    if (stop) stop.classList.toggle("on", !!(v.play.playing && voiceIsCurrent()));
+  }
+
+  function patchVoiceProgress() {
+    const v = state.voice;
+    const a = voiceAudioEl();
+    const seek = $("voiceSeek");
+    const time = $("voiceTime");
+    if (!a) return;
+    if (!voiceIsCurrent()) {
+      if (time) time.textContent = "0.00 / 0.00 s";
+      if (seek) {
+        seek.disabled = true;
+        seek.value = "0";
+      }
+      return;
+    }
+    const dur = v.play.duration || (Number.isFinite(a.duration) && a.duration > 0 ? a.duration : 0);
+    if (!v.play.duration && dur) v.play.duration = dur;
+    const t = Number.isFinite(a.currentTime) ? a.currentTime : 0;
+    if (time) time.textContent = t.toFixed(2) + " / " + dur.toFixed(2) + " s";
+    if (seek) {
+      seek.disabled = !(dur > 0);
+      seek.value = dur > 0 ? String(Math.round((1000 * Math.min(t, dur)) / dur)) : "0";
+    }
+  }
+
+  function stopVoice() {
+    const v = state.voice;
+    v.playGen++;
+    const a = voiceAudioEl();
+    if (a) {
+      try {
+        a.pause();
+      } catch (_) {
+        /* 忽略 */
+      }
+      a.removeAttribute("src");
+      try {
+        a.load();
+      } catch (_) {
+        /* 忽略 */
+      }
+    }
+    v.play = { event: null, id: null, audioFile: null, url: null, playing: false, duration: 0, error: null };
+    const seek = $("voiceSeek");
+    if (seek) {
+      seek.disabled = true;
+      seek.value = "0";
+    }
+    const time = $("voiceTime");
+    if (time) time.textContent = "0.00 / 0.00 s";
+    syncVoicePlayUI();
+    return true;
+  }
+
+  function onVoicePlayError(err, line, gen) {
+    if (gen !== state.voice.playGen) return; // 旧播放 / 切换后的迟到拒绝不得复活按钮
+    const name = (err && err.name) || "";
+    let msg;
+    if (name === "NotAllowedError") msg = "浏览器拦截了自动播放（需要用户手势）";
+    else if (name === "NotSupportedError") msg = "音频格式不支持或解码失败";
+    else if (name === "AbortError") {
+      state.voice.play.playing = false;
+      syncVoicePlayUI();
+      return;
+    } else msg = "播放失败：" + voiceErrText(err);
+    state.voice.play.playing = false;
+    state.voice.play.error = msg;
+    if (line) state.voice.lineErrors[line.id] = msg;
+    setVoiceHint(msg, "error");
+    setStatus(msg + (line ? "（" + line.audioFile + "）" : ""), "error");
+    scheduleVoiceRefresh();
+  }
+
+  function linkVoiceAnimation(line) {
+    const v = state.voice;
+    if (!v.linkAnimation || !line) return;
+    const anim = line.animation;
+    if (v.animations === null) {
+      setVoiceHint("未载入角色模型，动画未检查；仅播放语音", "warn");
+      setStatus("未载入角色模型，动画未检查；仅播放语音", "warn");
+      return;
+    }
+    if (line.animationStatus === "ok" && v.animations.indexOf(anim) >= 0) {
+      // setAnim 会把 playing 置 false，需要显式启动（Lead 裁决 4）
+      setAnim(anim);
+      state.playing = true;
+      state.lastTs = 0;
+      syncPlayButton();
+      requestAnimationFrame(tick);
+      setVoiceHint("联动动画：" + anim);
+    } else {
+      setVoiceHint("动画「" + anim + "」未映射（模型无同名动画），仅播放语音", "warn");
+      setStatus("动画「" + anim + "」未映射（模型无同名动画），仅播放语音", "warn");
+    }
+  }
+
+  function startVoicePlayback(ev, line) {
+    const v = state.voice;
+    const a = voiceAudioEl();
+    if (!line || !a) return false;
+    if (!voiceLinePlayable(line)) {
+      const why =
+        line.audioStatus === "missing" ? "语音缺失" : line.audioStatus === "unresolved" ? "语音路径未解析" : "语音不可用";
+      setVoiceHint(why + "：" + line.audioFile, "warn");
+      setStatus(why + "：" + line.audioFile, "warn");
+      refreshVoiceUI();
+      return false;
+    }
+    const url = voiceLineUrl(line);
+    if (!url) {
+      setVoiceHint("语音路径不可用：" + line.audioFile, "warn");
+      setStatus("语音路径不可用：" + line.audioFile, "warn");
+      return false;
+    }
+    // 同一条：暂停 / 继续（不重复 setAnim、不重复联动）
+    if (v.play.id === line.id && v.play.url === url && voiceIsCurrent()) {
+      if (!a.paused) {
+        a.pause();
+        v.play.playing = false;
+        syncVoicePlayUI();
+        return true;
+      }
+      const gen = ++v.playGen;
+      v.play.playing = true;
+      syncVoicePlayUI();
+      const p2 = a.play();
+      if (p2 && typeof p2.then === "function") {
+        p2.then(() => {
+          if (gen !== state.voice.playGen) return;
+          v.play.playing = true;
+          syncVoicePlayUI();
+        }).catch((err) => onVoicePlayError(err, line, gen));
+      }
+      return true;
+    }
+    const gen = ++v.playGen;
+    try {
+      a.pause();
+    } catch (_) {
+      /* 忽略 */
+    }
+    v.play = {
+      event: ev ? ev.event : null,
+      id: line.id,
+      audioFile: line.audioFile,
+      url: url,
+      playing: true,
+      duration: 0,
+      error: null,
+    };
+    delete v.lineErrors[line.id];
+    a.src = url;
+    try {
+      a.load();
+    } catch (_) {
+      /* 忽略 */
+    }
+    linkVoiceAnimation(line);
+    v.hint = v.hint || "播放：" + line.id;
+    updateVoicePlaybar();
+    patchVoiceProgress();
+    syncVoicePlayUI();
+    const p = a.play();
+    if (p && typeof p.then === "function") {
+      p.then(() => {
+        if (gen !== state.voice.playGen) return;
+        v.play.playing = true;
+        syncVoicePlayUI();
+      }).catch((err) => onVoicePlayError(err, line, gen));
+    }
+    return true;
+  }
+
+  function toggleVoiceLine(ev, line) {
+    return startVoicePlayback(ev, line);
+  }
+
+  function auditionVoiceEvent(ev) {
+    if (!ev) return false;
+    const line = (ev.lines || []).filter((l) => l.audioStatus === "ok")[0] || null;
+    if (!line) {
+      setVoiceHint("该事件没有可用语音（语音缺失 / 未解析 / 待检查）", "warn");
+      setStatus("该事件没有可用语音：" + (ev.event || ""), "warn");
+      return false;
+    }
+    state.voice.selected = ev.event;
+    return startVoicePlayback(ev, line);
+  }
+
+  function previewVoiceAnimation(line) {
+    const v = state.voice;
+    if (!line) return false;
+    if (line.animationStatus !== "ok" || !v.animations || v.animations.indexOf(line.animation) < 0) {
+      setVoiceHint("动画「" + (line.animation || "") + "」未映射或未检查，无法预览", "warn");
+      setStatus("动画未映射或未检查，无法预览：" + (line.animation || ""), "warn");
+      return false;
+    }
+    setAnim(line.animation);
+    state.playing = true;
+    state.lastTs = 0;
+    syncPlayButton();
+    requestAnimationFrame(tick);
+    setVoiceHint("预览动画：" + line.animation);
+    setStatus("预览动画「" + line.animation + "」", "info");
+    return true;
+  }
+
+  function applyVoicePackRoot(raw) {
+    const v = state.voice;
+    const lib = voiceLib();
+    if (!v.voice) return false;
+    let root = String(raw == null ? "" : raw).trim();
+    while (root.charAt(root.length - 1) === "/") root = root.slice(0, -1);
+    if (!root) {
+      notice("warn", "包根不能为空：请填仓库相对路径，例如 assets/characters/deepseek");
+      return false;
+    }
+    if (lib && typeof lib.derivePackRoot === "function" && /\/voice\/index\.json$/.test(root)) {
+      root = lib.derivePackRoot(root) || root;
+    }
+    const bad = voicePathIssue(root);
+    if (bad) {
+      notice("warn", "包根不可用：" + bad + "（" + root + "）");
+      return false;
+    }
+    const dir = root.split("/").pop();
+    const meta = v.voice.meta || {};
+    if (meta.characterId && dir !== meta.characterId) {
+      notice("warn", "包根目录名 " + dir + " 与语音包 character_id=" + meta.characterId + " 不一致；仍按你填的包根解析，请自行确认");
+    }
+    v.packRoot = root;
+    v.packRootSource = "manual";
+    v.rootDraft = root;
+    v.audio = Object.create(null);
+    v.audioDetail = Object.create(null);
+    v.lineErrors = Object.create(null);
+    v.checkGen++;
+    for (const line of v.voice.lines) v.audio[line.audioFile] = "checking";
+    evaluateVoiceState();
+    checkVoiceAudio();
+    refreshVoiceUI();
+    setStatus("已设置语音包根：" + root + "，正在检查语音…", "info");
+    return true;
+  }
+
+  /* --- 渲染 -------------------------------------------------------------- */
+
+  function voiceStatusBadge(status, ev) {
+    const badge = el("span", "status-badge " + status);
+    badge.appendChild(iconEl(VOICE_STATUS_ICON[status] || "info"));
+    let text = VOICE_STATUS_TEXT[status] || status;
+    const lines = (ev && ev.lines) || [];
+    if (status === "error") {
+      const n = lines.filter((l) => l.audioStatus === "missing").length;
+      if (n) text += " " + n;
+      badge.title = "该事件有 " + n + " 条语音缺失（HTTP 404）";
+    } else if (status === "warn") {
+      const n = new Set(lines.filter((l) => l.animationStatus === "missing").map((l) => l.animation)).size;
+      if (n) text += " " + n;
+      badge.title =
+        "该事件有 " +
+        n +
+        " 个动画未映射（模型无同名动画，需补语义→实际动画映射；不同台词共用同一标签只计 1 个）";
+    } else if (status === "unknown") {
+      badge.title = "该事件存在未检查 / 未解析的语音或动画";
+    } else {
+      badge.title = "语音与动画全部命中";
+    }
+    badge.appendChild(el("span", null, text));
+    return badge;
+  }
+
+  function voiceStatusDot(status) {
+    return el("span", "status-dot " + status);
+  }
+
+  /** 手动载入且没有包根时：提示 + 包根输入（只有这种情况才出现） */
+  function renderVoiceRootHost() {
+    const v = state.voice;
+    const host = $("voiceRootHost");
+    if (!host) return;
+    const need = !!(v.voice && !v.packRoot);
+    host.hidden = !need;
+    host.textContent = "";
+    if (!need) return;
+    host.appendChild(
+      el(
+        "p",
+        "voice-empty-hint",
+        "当前语音包没有包根，音频状态为未解析；填写包根后重新解析并检查（不会自动继承上一个包）。"
+      )
+    );
+    host.appendChild(buildVoiceRootForm());
+  }
+
+  function renderVoiceIssues() {
+    const v = state.voice;
+    const box = $("voiceIssues");
+    const list = $("voiceIssueList");
+    if (!box || !list) return;
+    const issues = (v.issues || []).slice();
+    if (!issues.length) {
+      box.hidden = true;
+      return;
+    }
+    box.hidden = false;
+    const title = $("voiceIssuesTitle");
+    if (title) title.textContent = "索引警告 " + issues.length + " 条（独立展示，不参与事件异常判断）";
+    list.hidden = !v.issuesOpen;
+    list.textContent = "";
+    if (v.issuesOpen) {
+      for (const it of issues) {
+        list.appendChild(el("li", null, (it.path || "") + " · " + (it.message || it.code || "")));
+      }
+    }
+    const toggle = $("voiceIssuesToggle");
+    if (toggle) {
+      toggle.textContent = v.issuesOpen ? "收起" : "展开";
+      toggle.hidden = false;
+    }
+  }
+
+  function renderVoiceSummary() {
+    const v = state.voice;
+    const text = $("voiceSummaryText");
+    if (!text) return;
+    const filter = $("voiceStatusFilter");
+    if (filter && filter.value !== v.statusFilter) filter.value = v.statusFilter;
+    const link = $("voiceLinkAnim");
+    if (link) link.checked = !!v.linkAnimation;
+    text.textContent = "";
+    if (!v.voice) {
+      text.appendChild(el("span", "dim", v.autoProbeBusy ? "正在自动查找语音包…" : "未载入语音包"));
+      return;
+    }
+    const c = voiceCounts();
+    text.appendChild(el("span", null, c.events + " 事件 / " + c.lines + " 条台词"));
+    text.appendChild(el("span", "vsep-dot", " · "));
+    appendVoiceCount(text, "语音缺失", c.audioMissing, "error");
+    text.appendChild(el("span", "vsep-dot", " / "));
+    appendVoiceCount(text, "动画未映射", c.animMissing, "warn");
+    text.appendChild(el("span", "vsep-dot", " / "));
+    appendVoiceCount(text, "未检查", c.pending, "dim");
+    if (v.checking) {
+      text.appendChild(el("span", "vsep-dot", " · "));
+      text.appendChild(el("span", "voice-checking", "检查中…"));
+    }
+  }
+
+  function appendVoiceCount(parent, label, n, kind) {
+    const span = el("span", "voice-count" + (n > 0 ? " is-" + kind : ""));
+    span.textContent = label + " " + n;
+    parent.appendChild(span);
+  }
+
+  function renderVoiceChips() {
+    const box = $("voiceChips");
+    if (!box) return;
+    const v = state.voice;
+    box.textContent = "";
+    const cats = voiceCategories();
+    const make = (value, label, count) => {
+      const chip = el("button", "chip");
+      chip.type = "button";
+      chip.dataset.category = value;
+      chip.setAttribute("aria-pressed", v.category === value ? "true" : "false");
+      chip.appendChild(el("span", null, label));
+      chip.appendChild(el("span", "chip-count", String(count)));
+      chip.title = label + "：" + count + " 个事件";
+      return chip;
+    };
+    box.appendChild(make("all", "全部", v.events.length));
+    for (const cat of cats) {
+      let n = 0;
+      for (const ev of v.events) if ((ev.categories || []).indexOf(cat) >= 0) n++;
+      box.appendChild(make(cat, cat, n));
+    }
+  }
+
+  function buildVoiceRootForm() {
+    const v = state.voice;
+    const wrap = el("div", "voice-root-form");
+    wrap.appendChild(el("span", "dim", "包根（仓库相对）"));
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "voice-root-input";
+    input.placeholder = "assets/characters/deepseek";
+    input.value = v.rootDraft || "";
+    input.setAttribute("aria-label", "语音包根目录（仓库相对路径）");
+    input.addEventListener("input", () => {
+      state.voice.rootDraft = input.value;
+    });
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        applyVoicePackRoot(input.value);
+      }
+    });
+    const btn = el("button", "btn btn-sm", "应用");
+    btn.type = "button";
+    btn.addEventListener("click", () => applyVoicePackRoot(input.value));
+    wrap.appendChild(input);
+    wrap.appendChild(btn);
+    return wrap;
+  }
+
+  function renderVoiceEmpty() {
+    const box = $("voiceEmpty");
+    if (!box) return;
+    const v = state.voice;
+    box.textContent = "";
+    const add = (text, cls) => box.appendChild(el("p", cls || "empty-note", text));
+    if (!voiceLib()) {
+      add("voice.js 未加载，无法解析语音索引。", "empty-note voice-empty-error");
+      return;
+    }
+    if (v.loadState === "loading" || v.autoProbeBusy) {
+      add(v.autoProbeBusy ? "正在按角色包自动查找 voice/index.json…" : "正在读取语音索引…", "empty-note");
+      return;
+    }
+    if (!v.voice) {
+      if (v.error) add(v.error.message, "empty-note voice-empty-error");
+      else if (v.autoProbeFailed)
+        add(
+          "没有找到语音包：已按角色包根及最多 3 级祖先探测 voice/index.json，未命中。事件默认跟随角色包自动探测；调试可用 文件 →「载入语音包…」或 ?voice=<仓库相对路径> 指定。",
+          "empty-note"
+        );
+      else {
+        add("尚未载入语音包。", "empty-note");
+        add(
+          "载入角色包（?index=）后会自动探测 voice/index.json；调试入口：文件 →「载入语音包…」或 ?voice=<仓库相对路径>。",
+          "voice-empty-hint"
+        );
+      }
+      return;
+    }
+    add("没有匹配的事件。", "empty-note");
+    const actions = el("div", "voice-empty-actions");
+    const reset = el("button", "btn btn-sm", "清除筛选");
+    reset.type = "button";
+    reset.addEventListener("click", () => {
+      const vv = state.voice;
+      vv.search = "";
+      vv.category = "all";
+      vv.statusFilter = "all";
+      const search = $("voiceSearch");
+      if (search) search.value = "";
+      renderVoice();
+    });
+    actions.appendChild(reset);
+    box.appendChild(actions);
+  }
+
+  function buildVoiceEventRow(ev) {
+    const v = state.voice;
+    const status = voiceEventStatus(ev);
+    const open = v.expanded.has(ev.event);
+    const row = el("div", "voice-event" + (open ? " open" : "") + (v.selected === ev.event ? " selected" : ""));
+    row.dataset.event = ev.event;
+    row.setAttribute("role", "listitem");
+
+    const hd = el("div", "voice-ev-hd");
+    // 第一行：箭头 + 事件名 + 状态徽标（320px 内不换行，事件名可省略）
+    const line1 = el("div", "voice-ev-line1");
+    const toggle = el("button", "voice-ev-toggle");
+    toggle.type = "button";
+    toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    toggle.title = open ? "折叠台词" : "展开台词";
+    toggle.appendChild(iconEl("chevron-right"));
+    line1.appendChild(toggle);
+    const name = el("button", "voice-ev-name", ev.event);
+    name.type = "button";
+    name.title = "选中并" + (open ? "折叠" : "展开") + " " + ev.event;
+    line1.appendChild(name);
+    line1.appendChild(el("span", "spacer"));
+    line1.appendChild(voiceStatusBadge(status, ev));
+    hd.appendChild(line1);
+
+    // 第二行：分类 / 条数 / 动画标签 / 试听
+    const line2 = el("div", "voice-ev-line2");
+    line2.appendChild(el("span", "voice-cat", ev.category || "—"));
+    line2.appendChild(el("span", "voice-ev-meta", (ev.lines || []).length + " 条"));
+    const tags = el("span", "voice-anim-tags");
+    for (const anim of ev.animations || []) {
+      const animStatus = voiceAnimationStatusInEvent(ev, anim);
+      const tag = el(
+        "span",
+        "voice-tag" + (animStatus === "missing" ? " is-warn" : animStatus === "unknown" ? " is-dim" : " is-ok"),
+        anim
+      );
+      tag.title =
+        animStatus === "missing"
+          ? "动画未映射：" + anim + "（模型无同名动画，需补语义→实际动画映射）"
+          : animStatus === "unknown"
+          ? "动画未检查：未载入角色模型"
+          : "动画存在：" + anim;
+      tags.appendChild(tag);
+    }
+    line2.appendChild(tags);
+    line2.appendChild(el("span", "spacer"));
+    const audition = el("button", "btn btn-sm voice-audition", "试听");
+    audition.type = "button";
+    const firstOk = (ev.lines || []).filter((l) => l.audioStatus === "ok")[0] || null;
+    audition.disabled = !firstOk;
+    audition.title = firstOk ? "试听 " + firstOk.id + "（第一条可用语音）" : "该事件没有可用语音";
+    line2.appendChild(audition);
+    hd.appendChild(line2);
+    row.appendChild(hd);
+
+    if (open) {
+      const body = el("div", "voice-ev-body");
+
+      /* 动画清单与状态（内联，替代原右侧详情） */
+      const anims = el("div", "voice-ev-anims");
+      anims.appendChild(el("span", "voice-ev-label", "动画"));
+      const animList = ev.animations || [];
+      if (!animList.length) anims.appendChild(el("span", "dim", "（无动画标签）"));
+      else {
+        for (const anim of animList) {
+          const st = voiceAnimationStatusInEvent(ev, anim);
+          const item = el(
+            "span",
+            "voice-anim-item" + (st === "ok" ? " is-ok" : st === "missing" ? " is-warn" : " is-dim")
+          );
+          item.appendChild(voiceStatusDot(st === "ok" ? "ok" : st === "missing" ? "warn" : "unknown"));
+          item.appendChild(el("span", "voice-anim-name", anim));
+          item.appendChild(el("span", "dim", st === "ok" ? "存在" : st === "missing" ? "未映射" : "未检查"));
+          item.title =
+            st === "ok"
+              ? "动画存在：" + anim
+              : st === "missing"
+              ? voiceAnimationTitle({ animation: anim, animationStatus: "missing" })
+              : "未载入角色模型，动画存在性未检查";
+          anims.appendChild(item);
+        }
+      }
+      body.appendChild(anims);
+
+      /* 资源检查（复用 voiceResourceChecks） */
+      body.appendChild(el("div", "voice-ev-label", "资源检查"));
+      const checks = voiceResourceChecks(ev);
+      const checkList = el("ul", "voice-check-list");
+      if (!checks.length) {
+        const li = el("li", "is-ok");
+        li.appendChild(voiceStatusDot("ok"));
+        li.appendChild(el("span", null, "语音与动画全部命中（" + (ev.lines || []).length + " 条台词）"));
+        checkList.appendChild(li);
+      } else {
+        for (const item of checks) {
+          const li = el("li", "is-" + item.kind);
+          li.appendChild(voiceStatusDot(item.kind === "error" ? "error" : item.kind === "warn" ? "warn" : "unknown"));
+          li.appendChild(el("span", null, item.text));
+          checkList.appendChild(li);
+        }
+      }
+      body.appendChild(checkList);
+      body.appendChild(
+        el(
+          "p",
+          "voice-model-anims dim",
+          v.animations === null
+            ? "未载入角色模型：动画存在性未检查"
+            : "模型动画（" + v.animations.length + "）：" + (v.animations.join(" / ") || "（无）")
+        )
+      );
+
+      /* 台词（只保留这一套，不再有右侧详情里的重复列表） */
+      body.appendChild(el("div", "voice-ev-label", "台词"));
+      const lines = el("div", "voice-lines");
+      for (const line of ev.lines || []) lines.appendChild(buildVoiceLineRow(ev, line));
+      body.appendChild(lines);
+      row.appendChild(body);
+    }
+    return row;
+  }
+
+  function buildVoiceLineRow(ev, line) {
+    const v = state.voice;
+    const row = el("div", "voice-line");
+    row.dataset.id = line.id;
+    row.dataset.event = ev.event;
+
+    const play = el("button", "voice-line-play btn btn-icon btn-sm");
+    play.type = "button";
+    const playing = voiceLineIsPlaying(line);
+    play.innerHTML = icon(playing ? "pause" : "play");
+    play.setAttribute("aria-pressed", playing ? "true" : "false");
+    play.classList.toggle("on", playing);
+    play.disabled = !voiceLinePlayable(line);
+    play.title = voiceAudioTitle(line);
+    play.setAttribute("aria-label", (playing ? "暂停" : "播放") + "台词 " + line.id);
+    row.appendChild(play);
+
+    const main = el("div", "voice-line-main");
+    const top = el("div", "voice-line-top");
+    top.appendChild(el("span", "voice-line-id", line.id));
+    const audioTag = el(
+      "span",
+      "voice-tag" + (line.audioStatus === "missing" ? " is-error" : line.audioStatus === "ok" ? " is-ok" : " is-dim")
+    );
+    audioTag.textContent =
+      line.audioStatus === "ok"
+        ? "语音 ✓"
+        : line.audioStatus === "missing"
+        ? "语音缺失"
+        : line.audioStatus === "checking"
+        ? "检查中…"
+        : line.audioStatus === "unresolved"
+        ? "语音未解析"
+        : "语音未确认";
+    audioTag.title = voiceAudioTitle(line);
+    top.appendChild(audioTag);
+    const animTag = el(
+      "span",
+      "voice-tag" + (line.animationStatus === "missing" ? " is-warn" : line.animationStatus === "ok" ? " is-ok" : " is-dim")
+    );
+    animTag.textContent =
+      line.animationStatus === "ok" ? "动画 ✓" : line.animationStatus === "missing" ? "动画未映射" : "动画未检查";
+    animTag.title = voiceAnimationTitle(line);
+    top.appendChild(animTag);
+    const preview = el("button", "btn btn-sm voice-line-preview", "动画");
+    preview.type = "button";
+    preview.disabled = line.animationStatus !== "ok";
+    preview.title =
+      line.animationStatus === "ok"
+        ? "预览动画「" + line.animation + "」（语音缺失时仍可用）"
+        : voiceAnimationTitle(line);
+    top.appendChild(preview);
+    main.appendChild(top);
+    main.appendChild(el("span", "voice-line-text", line.text || ""));
+    const err = v.lineErrors[line.id];
+    if (err) main.appendChild(el("span", "voice-line-error", err));
+    main.appendChild(el("span", "voice-line-file", line.audioFile));
+    row.appendChild(main);
+    return row;
+  }
+
+  function renderVoiceList() {
+    const v = state.voice;
+    const box = $("voiceEventList");
+    const empty = $("voiceEmpty");
+    if (!box) return;
+    box.textContent = "";
+    const list = voiceVisibleEvents();
+    if (!list.length) {
+      box.hidden = true;
+      if (empty) {
+        empty.hidden = false;
+        renderVoiceEmpty();
+      }
+    } else {
+      box.hidden = false;
+      if (empty) empty.hidden = true;
+      const frag = document.createDocumentFragment();
+      for (const ev of list) frag.appendChild(buildVoiceEventRow(ev));
+      box.appendChild(frag);
+    }
+    const count = $("voiceSearchCount");
+    if (count) {
+      if (v.search.trim()) {
+        count.hidden = false;
+        count.textContent = list.length + "/" + v.events.length;
+      } else count.hidden = true;
+    }
+  }
+
+  function voiceResourceChecks(ev) {
+    const v = state.voice;
+    const animList = v.animations && v.animations.length ? v.animations.join(" / ") : "（无）";
+    const out = [];
+    for (const line of ev.lines || []) {
+      if (line.audioStatus === "missing") {
+        out.push({ kind: "error", text: "语音缺失：" + line.audioFile + "（" + (v.audioDetail[line.audioFile] || "HTTP 404") + "）" });
+      } else if (line.audioStatus === "unresolved") {
+        out.push({ kind: "warn", text: "语音未解析：" + line.audioFile + "（缺少语音包根，可用 ?voice= 或填写包根）" });
+      } else if (line.audioStatus === "unknown") {
+        out.push({ kind: "warn", text: "语音未确认：" + line.audioFile + "（" + (v.audioDetail[line.audioFile] || "未检查") + "）" });
+      } else if (line.audioStatus === "checking") {
+        out.push({ kind: "dim", text: "语音检查中：" + line.audioFile });
+      }
+      if (line.animationStatus === "missing") {
+        out.push({
+          kind: "warn",
+          text: "动画未映射：" + line.animation + "（模型无同名动画，需补语义→实际动画映射；模型动画：" + animList + "）",
+        });
+      } else if (line.animationStatus === "unknown") {
+        out.push({ kind: "warn", text: "动画未检查：" + line.animation + "（未载入角色模型，动画存在性未检查）" });
+      }
+    }
+    const seen = new Set();
+    return out.filter((it) => {
+      if (seen.has(it.text)) return false;
+      seen.add(it.text);
+      return true;
+    });
+  }
+
+  function renderVoice() {
+    const v = state.voice;
+    if (!v.open) return;
+    const list = $("voiceEventList");
+    const scroll = list ? list.scrollTop : 0;
+    renderVoiceRootHost();
+    renderVoiceIssues();
+    renderVoiceSummary();
+    renderVoiceChips();
+    renderVoiceList();
+    if (list) list.scrollTop = scroll;
+    updateVoicePlaybar();
+    syncVoicePlayUI();
+  }
+
+  function syncVoiceBadge() {
+    const badge = $("eventTabBadge");
+    const menuRef = menuRefs.voiceTest;
+    const v = state.voice;
+    const c = voiceCounts();
+    // 徽标 = hasIssues 事件数（含未检查/未解析）；语音缺失红、仅动画未映射黄
+    const issueEvents = v.events.filter((ev) => ev.hasIssues === true || voiceEventStatus(ev) !== "ok").length;
+    if (badge) {
+      badge.hidden = !v.voice || issueEvents === 0;
+      badge.textContent = String(issueEvents);
+      badge.classList.toggle("is-error", c.errorEvents > 0);
+      badge.classList.toggle("is-warn", c.errorEvents === 0 && c.warnEvents > 0);
+      badge.title = c.errorEvents
+        ? "语音缺失 " + c.errorEvents + " 个事件"
+        : c.warnEvents > 0
+        ? "动画未映射 " + c.warnEvents + " 个事件" + (c.unknownEvents ? "，未检查 " + c.unknownEvents + " 个" : "")
+        : c.unknownEvents > 0
+        ? "未检查 " + c.unknownEvents + " 个事件（未载入模型或未解析）"
+        : "无异常事件";
+    }
+    if (menuRef && menuRef.node) {
+      const node = menuRef.node;
+      const note = node.querySelector(".menu-note");
+      if (note) {
+        note.textContent = v.voice
+          ? c.events +
+            " 事件 / " +
+            c.lines +
+            " 条台词 · 语音缺失 " +
+            c.audioMissing +
+            " / 动画未映射 " +
+            c.animMissing
+          : v.autoProbeFailed
+          ? "打开右侧事件分页（未找到语音包）"
+          : "打开右侧事件分页（未载入语音包）";
+      }
+    }
+  }
+
+  function scheduleVoiceRefresh() {
+    const v = state.voice;
+    syncVoiceBadge();
+    if (!v.open || v.renderTimer) return;
+    v.renderTimer = setTimeout(() => {
+      v.renderTimer = 0;
+      renderVoice();
+    }, 80);
+  }
+
+  function refreshVoiceUI() {
+    syncVoiceBadge();
+    const v = state.voice;
+    if (v.renderTimer) {
+      clearTimeout(v.renderTimer);
+      v.renderTimer = 0;
+    }
+    if (v.open) renderVoice();
+  }
+
+  /* --- 打开 / 关闭 / 交互入口 -------------------------------------------- */
+
+  /** 侧栏分页：parts | events（事件分页不是模态，键盘不拦截） */
+  function setInspectorTab(tab) {
+    const v = state.voice;
+    const events = tab === "events";
+    const aside = $("inspector");
+    if (aside) aside.classList.toggle("show-events", events);
+    const tabParts = $("tabParts");
+    const tabEvents = $("tabEvents");
+    if (tabParts) tabParts.setAttribute("aria-selected", events ? "false" : "true");
+    if (tabEvents) tabEvents.setAttribute("aria-selected", events ? "true" : "false");
+    const parts = $("partsView");
+    const panel = $("eventPanel");
+    if (parts) parts.hidden = events;
+    if (panel) panel.hidden = !events;
+    v.open = events;
+    if (!events) {
+      stopVoice();
+      v.hint = "";
+      v.hintKind = "";
+    } else {
+      syncVoiceBadge();
+      renderVoice();
+    }
+  }
+
+  function openVoice() {
+    setPanelOpen(true);
+    setInspectorTab("events");
+  }
+
+  function closeVoice() {
+    setInspectorTab("parts");
+  }
+
+  function toggleVoiceEvent(name) {
+    const v = state.voice;
+    if (!name) return;
+    if (v.expanded.has(name)) v.expanded.delete(name);
+    else v.expanded.add(name);
+    v.selected = name;
+    renderVoice();
+    const box = $("voiceEventList");
+    const row = box && box.querySelector('.voice-event[data-event="' + voiceCssEscape(name) + '"]');
+    if (row && row.scrollIntoView) row.scrollIntoView({ block: "nearest" });
+  }
+
+  function voiceSnapshot() {
+    const v = state.voice;
+    const c = voiceCounts();
+    return {
+      open: v.open,
+      explicitRequest: v.explicitRequest,
+      provenance: v.provenance,
+      indexPath: v.indexPath,
+      packRoot: v.packRoot,
+      packRootSource: v.packRootSource,
+      loadState: v.loadState,
+      error: v.error ? { message: v.error.message, indexPath: v.error.indexPath } : null,
+      autoProbeBusy: v.autoProbeBusy,
+      autoProbeFailed: v.autoProbeFailed,
+      checking: v.checking,
+      issues: (v.issues || []).map((i) => ({ path: i.path, code: i.code, message: i.message })),
+      meta: v.voice ? v.voice.meta : null,
+      animations: v.animations ? v.animations.slice() : null,
+      events: v.events.map((ev) => ({
+        event: ev.event,
+        category: ev.category,
+        categories: (ev.categories || []).slice(),
+        status: voiceEventStatus(ev),
+        lineCount: (ev.lines || []).length,
+        animations: (ev.animations || []).slice(),
+        missingAudio: (ev.lines || []).filter((l) => l.audioStatus === "missing").length,
+        missingAnimation: (ev.lines || []).filter((l) => l.animationStatus === "missing").length,
+        lines: (ev.lines || []).map((l) => ({
+          id: l.id,
+          text: l.text,
+          animation: l.animation,
+          audioFile: l.audioFile,
+          audioStatus: l.audioStatus,
+          audioDetail: v.audioDetail[l.audioFile] || l.audioDetail || "",
+          animationStatus: l.animationStatus,
+        })),
+      })),
+      summary: c,
+      expanded: Array.from(v.expanded),
+      selected: v.selected,
+      search: v.search,
+      category: v.category,
+      statusFilter: v.statusFilter,
+      linkAnimation: v.linkAnimation,
+      play: {
+        event: v.play.event,
+        id: v.play.id,
+        audioFile: v.play.audioFile,
+        url: v.play.url,
+        playing: v.play.playing,
+        duration: v.play.duration,
+        error: v.play.error,
+      },
+    };
+  }
+
+  /* ==========================================================================
    * 14. 保存（就地回写）/ 另存（ZIP）—— 契约 §4.2 / §4.4
    * ====================================================================== */
   function currentBoneValues() {
@@ -2637,6 +4637,24 @@
     );
     menu.appendChild(menuItem("saveAs", { label: "另存文件", icon: "layers", note: "", onClick: saveAsZip }));
     menu.appendChild(menuSep());
+    menu.appendChild(menuTitle("事件"));
+    menu.appendChild(
+      menuItem("voiceTest", {
+        label: "事件测试…",
+        icon: "voice",
+        note: "打开右侧事件分页（未载入语音包）",
+        onClick: () => openVoice(),
+      })
+    );
+    menu.appendChild(
+      menuItem("voiceLoad", {
+        label: "载入语音包…",
+        icon: "open",
+        note: "选择一个 voice/index.json（只读）",
+        onClick: () => $("voiceFiles").click(),
+      })
+    );
+    menu.appendChild(menuSep());
     menu.appendChild(menuTitle("示例"));
     menu.appendChild(
       menuItem("ex-main", {
@@ -2814,6 +4832,8 @@
     syncMenuEntry("load", { disabled: busy });
     syncMenuEntry("save", { disabled: !canSaveNow(), note: saveReason() });
     syncMenuEntry("saveAs", { disabled: !canArchiveNow(), note: archiveReason() });
+    syncMenuEntry("voiceTest", { disabled: false });
+    syncMenuEntry("voiceLoad", { disabled: false });
     syncMenuEntry("toolMove", { checked: state.tool === "move" });
     syncMenuEntry("toolPan", { checked: state.tool === "pan" });
     syncMenuEntry("undo", { disabled: !loaded || state.undo.length === 0 });
@@ -3011,15 +5031,27 @@
 
   function syncPanel() {
     const btn = $("btnPanel");
-    if (!btn) return;
     const open = panelVisible();
-    btn.setAttribute("aria-pressed", open ? "true" : "false");
-    btn.classList.toggle("on", open);
+    if (btn) {
+      // 「展开」只负责展开：面板已展开时隐藏；不再强制 disabled（Lead UI 反馈 3）
+      btn.hidden = open;
+      btn.setAttribute("aria-pressed", open ? "true" : "false");
+      btn.classList.toggle("on", open);
+      btn.disabled = false;
+    }
+    const close = $("btnPanelClose");
+    if (close) close.disabled = false;
   }
 
   function setPanelOpen(open) {
     if (isNarrow()) document.body.classList.toggle("drawer-open", !!open);
     else document.body.classList.toggle("panel-hidden", !open);
+    // 收起侧栏（宽屏 / 窄屏抽屉）时停语音：否则后台继续播且没有可见控件
+    if (!open) {
+      stopVoice();
+      state.voice.hint = "";
+      state.voice.hintKind = "";
+    }
     syncPanel();
     if (state.model) render();
   }
@@ -3066,11 +5098,148 @@
     $("btnFit").addEventListener("click", () => fitView("all"));
     $("btnZoomIn").addEventListener("click", () => zoomBy(1.25));
     $("btnZoomOut").addEventListener("click", () => zoomBy(1 / 1.25));
-    $("btnPanel").addEventListener("click", () => setPanelOpen(!panelVisible()));
+    $("btnPanel").addEventListener("click", () => setPanelOpen(true));
+    $("btnPanelClose").addEventListener("click", () => setPanelOpen(false));
     $("helpClose").addEventListener("click", closeHelp);
     $("helpOverlay").addEventListener("click", (e) => {
       if (e.target === $("helpOverlay")) closeHelp();
     });
+    /* ---- 右侧侧栏分页：部件 / 事件（契约 §2，非模态） ---- */
+    const setListView = (view) => {
+      if (state.listView === view) return;
+      state.listView = view;
+      syncList();
+      setStatus(view === "tree" ? "部件列表：骨骼层级" : "部件列表：显示顺序");
+    };
+    $("tabListTree").addEventListener("click", () => setListView("tree"));
+    $("tabListOrder").addEventListener("click", () => setListView("order"));
+    $("tabParts").addEventListener("click", () => setInspectorTab("parts"));
+    $("tabEvents").addEventListener("click", () => setInspectorTab("events"));
+    $("voiceFiles").addEventListener("change", (e) => {
+      const file = e.target.files && e.target.files[0];
+      e.target.value = "";
+      if (file) loadVoiceFromFile(file);
+    });
+    $("voiceSearch").addEventListener("input", (e) => {
+      state.voice.search = e.target.value;
+      if (state.voice.open) renderVoice();
+    });
+    $("voiceStatusFilter").addEventListener("change", (e) => {
+      state.voice.statusFilter = e.target.value;
+      if (state.voice.open) renderVoice();
+    });
+    $("voiceLinkAnim").addEventListener("change", (e) => {
+      state.voice.linkAnimation = e.target.checked;
+      setStatus(e.target.checked ? "已开启联动动画" : "已关闭联动动画：只播放语音");
+    });
+    $("voiceIssuesToggle").addEventListener("click", () => {
+      state.voice.issuesOpen = !state.voice.issuesOpen;
+      if (state.voice.open) renderVoice();
+    });
+    $("voiceStop").addEventListener("click", () => {
+      stopVoice();
+      setVoiceHint("已停止语音");
+      setStatus("已停止语音");
+    });
+    $("voiceSeek").addEventListener("input", (e) => {
+      const v = state.voice;
+      const a = voiceAudioEl();
+      if (!a || !voiceIsCurrent() || !(v.play.duration > 0)) return;
+      const t = (v.play.duration * Number(e.target.value)) / 1000;
+      try {
+        a.currentTime = t;
+      } catch (_) {
+        /* 忽略 */
+      }
+      patchVoiceProgress();
+    });
+    $("voiceChips").addEventListener("click", (e) => {
+      const chip = e.target.closest(".chip");
+      if (!chip) return;
+      state.voice.category = chip.dataset.category || "all";
+      renderVoice();
+    });
+    $("voiceEventList").addEventListener("click", (e) => {
+      const playBtn = e.target.closest(".voice-line-play");
+      if (playBtn) {
+        const row = playBtn.closest(".voice-line");
+        const line = row ? voiceFindLine(row.dataset.id) : null;
+        const ev = line ? voiceFindEventOfLine(line) : null;
+        if (line) {
+          if (ev) state.voice.selected = ev.event;
+          startVoicePlayback(ev, line);
+        }
+        return;
+      }
+      const previewBtn = e.target.closest(".voice-line-preview");
+      if (previewBtn) {
+        const row = previewBtn.closest(".voice-line");
+        const line = row ? voiceFindLine(row.dataset.id) : null;
+        const ev = line ? voiceFindEventOfLine(line) : null;
+        if (ev) state.voice.selected = ev.event;
+        previewVoiceAnimation(line);
+        return;
+      }
+      const auditionBtn = e.target.closest(".voice-audition");
+      if (auditionBtn) {
+        const row = auditionBtn.closest(".voice-event");
+        auditionVoiceEvent(row ? voiceFindEvent(row.dataset.event) : null);
+        renderVoice();
+        return;
+      }
+      const evRow = e.target.closest(".voice-event");
+      if (!evRow) return;
+      // 箭头与事件名本身就是按钮：显式处理，否则会被下面的 closest("button") 排除
+      if (e.target.closest(".voice-ev-toggle") || e.target.closest(".voice-ev-name")) {
+        toggleVoiceEvent(evRow.dataset.event);
+        return;
+      }
+      const hd = e.target.closest(".voice-ev-hd");
+      if (hd && !e.target.closest("button")) toggleVoiceEvent(evRow.dataset.event);
+    });
+    const voiceAudio = $("voiceAudio");
+    if (voiceAudio) {
+      voiceAudio.addEventListener("loadedmetadata", () => {
+        if (!voiceIsCurrent()) return;
+        const d = voiceAudio.duration;
+        state.voice.play.duration = Number.isFinite(d) && d > 0 ? d : 0;
+        const seek = $("voiceSeek");
+        if (seek) seek.disabled = !(state.voice.play.duration > 0);
+        patchVoiceProgress();
+      });
+      voiceAudio.addEventListener("timeupdate", () => {
+        if (!voiceIsCurrent()) return;
+        patchVoiceProgress();
+      });
+      voiceAudio.addEventListener("play", () => {
+        if (!voiceIsCurrent()) return;
+        state.voice.play.playing = true;
+        syncVoicePlayUI();
+      });
+      voiceAudio.addEventListener("pause", () => {
+        if (!voiceIsCurrent()) return;
+        if (voiceAudio.ended) return;
+        state.voice.play.playing = false;
+        syncVoicePlayUI();
+      });
+      voiceAudio.addEventListener("ended", () => {
+        if (!voiceIsCurrent()) return;
+        state.voice.play.playing = false;
+        patchVoiceProgress();
+        syncVoicePlayUI();
+      });
+      voiceAudio.addEventListener("error", () => {
+        if (!voiceIsCurrent()) return;
+        const v = state.voice;
+        v.play.playing = false;
+        const msg = "播放失败：无法读取或解码 " + (v.play.audioFile || "音频");
+        v.play.error = msg;
+        if (v.play.id) v.lineErrors[v.play.id] = msg;
+        setVoiceHint(msg, "error");
+        setStatus(msg, "error");
+        scheduleVoiceRefresh();
+      });
+    }
     const backdrop = $("backdrop");
     if (backdrop) {
       backdrop.addEventListener("click", () => setPanelOpen(false));
@@ -3210,6 +5379,10 @@
   }
 
   function init() {
+    /* 显式 ?voice= 锁必须在任何模型 / 语音异步之前落定（契约 §2.1，Lead 裁决 3） */
+    const params = new URLSearchParams(location.search);
+    const voiceParam = params.get("voice");
+    if (voiceParam != null && String(voiceParam).trim()) state.voice.explicitRequest = String(voiceParam).trim();
     bindUI();
     bindMenus();
     if ($("kbdUndo")) $("kbdUndo").textContent = MOD_LABEL + "+Z";
@@ -3224,7 +5397,6 @@
     setStatus("未载入：选择一个 index.json，或从「文件 → 示例」开始");
     render();
     probeCapabilities();
-    const params = new URLSearchParams(location.search);
     const indexParam = params.get("index");
     const rigParam = params.get("rig");
     if (indexParam) {
@@ -3233,6 +5405,7 @@
     } else if (rigParam) {
       loadRig(rigParam);
     }
+    if (state.voice.explicitRequest) loadVoiceByPath(state.voice.explicitRequest, "explicit");
     window.__characterEditor = {
       state: state,
       core: coreInfo,
@@ -3252,6 +5425,25 @@
       saveReason: saveReason,
       archiveReason: archiveReason,
       patchedModel: patchedModel,
+      /* 事件语音（契约 §2.5，只读调试入口，非公开 API） */
+      voice: voiceSnapshot,
+      loadVoice: (arg) => {
+        if (arg && typeof arg === "object" && typeof arg.text === "function") return loadVoiceFromFile(arg);
+        if (typeof arg === "string" && arg) return loadVoiceByPath(arg, "explicit");
+        return reloadVoice();
+      },
+      openVoice: openVoice,
+      closeVoice: closeVoice,
+      playVoiceLine: (eventName, id) => {
+        const ev = voiceFindEvent(eventName);
+        const line = ev ? (ev.lines || []).filter((l) => l.id === id)[0] : null;
+        if (!line) {
+          setStatus("找不到台词：" + eventName + " / " + id, "warn");
+          return false;
+        }
+        return startVoicePlayback(ev, line);
+      },
+      stopVoice: stopVoice,
     };
   }
 

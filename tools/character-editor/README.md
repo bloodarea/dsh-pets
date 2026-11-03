@@ -19,7 +19,7 @@
 等价的手工方式（**只读**：能载入与另存 ZIP，保存文件置灰；就地保存需要 `start.sh` 起的 `serve.py`）：
 
 ```bash
-cd /home/dev/SourceCodeLibrary/Plugins/dsh-pets     # 必须在仓库根
+cd <仓库根目录>                                  # 必须是 dsh-pets 仓库根
 python3 -m http.server 8123 --bind 127.0.0.1
 # 浏览器打开 http://127.0.0.1:8123/tools/character-editor/
 ```
@@ -46,6 +46,7 @@ python3 tools/character-editor/serve.py --port 8123 --no-browser
 | **「文件 ▾」→ 示例 → deepseek 女仆 / 旧版三视图** | 走两个真实索引（主包与 `legacy-views`），不硬编码文件路径 |
 | **「文件 ▾」→ 示例 → 测试样张** | 内置 fixtures（region / 刚性 mesh / 加权 mesh / 一骨 IK / 二骨 IK …），不依赖外部文件，适合验证渲染。样张没有原始整包字节，**不能保存、也不能另存** |
 | **`?rig=<同源相对路径>`** | **开发用只读兼容**：直接载入同目录的 `<同名>.atlas` 与贴图，不推测索引、不启用就地保存（可另存 ZIP） |
+| **`?voice=<仓库相对路径>`** | 深链载入事件语音索引（如 `?voice=assets/characters/deepseek/voice/index.json`），可与 `?index=` 同时用；以 `/voice/index.json` 结尾时自动推导包根 |
 
 ### 索引 schema（v1）
 
@@ -123,16 +124,19 @@ cd /tmp/spine-verify && node spine-verify.mjs /path/to/assets/characters/deepsee
 
 自上而下：**菜单条 → 视图/显示层条 → 画布 + 右栏 → 动画条 → 状态栏**。
 
-1. **菜单条**（≈38px）：文件 / 编辑 / 视图 / 帮助，右侧标题「内置人物包管理器」。
-   - 文件：载入文件… / 保存文件 / 另存文件 / 示例（真实索引与 fixtures）
+1. **菜单条**（≈38px）：文件 / 编辑 / 视图 / 帮助，中间标题「内置人物包管理器」（绝对居中；< 720px 隐藏）。
+   - 文件：载入文件… / 保存文件 / 另存文件 / **事件测试…** / **载入语音包…**（调试入口）/ 示例（真实索引与 fixtures）
    - 编辑：移动 `V` / 平移 `Space` / 撤销 `Ctrl`/`⌘`+`Z` / 重置（回到最近保存状态）
    - 视图：适配 / 放大 / 缩小 / 实际大小 / 面板 / 显示层四开关 / 吸附 / 权重配色 / 贴图强度——都是第二行控件的等价入口
    - 帮助：帮助浮层 / 快捷键
    - 菜单可键盘操作：Enter / Space 展开，方向键在项间移动，Esc 关闭并把焦点还给菜单按钮；点外部也关闭。
-2. **视图/显示层条**（≈34px，一行）：适配 `F` + 缩放 −/百分比/+ + 面板 + 分隔 + 显示层（贴图/骨骼/网格/权重）+ 吸附 + 贴图强度滑杆。
-   窄屏（< 960px）按逻辑组换行，不产生整页横向滚动。
-3. **主区**：中间画布（棋盘格）+ 右侧 320px 栏：
-   - **部件列表**：按绘制顺序倒序（最上层在最前），可搜索（部件名 / 附件名 / 骨名），每行可点眼睛隐藏；
+2. **视图/显示层条**（≈34px，一行）：适配 `F` + 缩放 −/百分比/+ + 分隔 + 显示层（贴图/骨骼/网格/权重）+ 吸附 + 贴图强度滑杆；
+   最右端是**「展开」**（面板收起时出现）。窄屏（< 960px）按逻辑组换行，不产生整页横向滚动。
+3. **主区**：中间画布（棋盘格）+ 右侧 320px 栏（顶部分页「部件 / 事件」+「收起」）：
+   - **部件列表**：标题栏下方是独立的「显示顺序 / 骨骼层级」分页切换——
+     **显示顺序**（默认，按 z 序倒序，上方在最前；**拖拽行可直接调整显示顺序**，也可用上移/下移），
+     **骨骼层级**（按骨骼父子关系折叠/展开，部件挂在自己的骨下面，行首数字仍是显示顺序）；
+     都可搜索（部件名 / 附件名 / 骨名），每行可点眼睛隐藏。
    - **选中**：绑定骨、附件类型与顶点/三角数、可编辑性、X/Y、旋转（数值 + 滑杆）、缩放 X/Y、层级四键、恢复该部件、多骨影响列表；
    - **调试**（折叠）：骨骼 / IK、网格、权重、表情、未求值明细；
    - **状态脚注**：是否有未保存改动 · 未求值项数 · 渲染器。
@@ -140,7 +144,8 @@ cd /tmp/spine-verify && node spine-verify.mjs /path/to/assets/characters/deepsee
 5. **状态栏**（最底）：状态消息 + 操作提示。
 
 菜单与行内控件**共享同一份 app state**：点菜单项等价于操作行内控件，`aria-checked` 与原生 `checked`/`value`
-由同一个同步函数设置，不会出现两套状态。窄屏（< 960px）右栏变抽屉，用「面板」按钮开合；动画条按传输组 / 时间轴组换行。
+由同一个同步函数设置，不会出现两套状态。窄屏（< 960px）右栏变抽屉：视图条最右端「展开」打开、栏内顶部「收起」关闭，
+抽屉关闭 / 切到「部件」分页都会停止语音；动画条按传输组 / 时间轴组换行。
 
 ## 显示层
 
@@ -186,8 +191,9 @@ cd /tmp/spine-verify && node spine-verify.mjs /path/to/assets/characters/deepsee
 
 - 可编辑：X / Y（父骨局部位移）、旋转（-180..180，数值 + 滑杆）、缩放 X/Y、z 序、显隐、锁定。
 - 拖动只改 X / Y；旋转与缩放用检查器，同样写父骨局部值，撤销覆盖。
-- **加权 mesh 的位置只读**（多骨控制，改位置无意义），**锁定的部件**、**IK 控制的骨**、
-  **动画预览中**都会被拒绝并给出原因。
+- **加权 mesh 的位置只读**（多骨控制，改位置无意义；想直接摆位就把它烘成刚性 mesh），
+  **锁定的部件**、**生效中的 IK 骨（mix>0）**、**动画预览中**都会被拒绝并给出原因。
+  `mix=0` 的 IK 约束不参与求值，等价于未绑定，此时允许直接拖动该骨。
 - 一次手势 = 一条撤销；拖动中按 `Esc` 回滚；「恢复该部件」把它自己的变换恢复到**最近保存状态**（尚未保存时即载入状态）。
 - 显隐与锁定**只影响查看器**，不写进 JSON。
 
@@ -197,6 +203,45 @@ cd /tmp/spine-verify && node spine-verify.mjs /path/to/assets/characters/deepsee
 - 预览动画时**禁用摆位**（状态栏与检查器写明「先点绑定姿态」），点 `绑定姿态` 回到 setup pose。
 - 时长由 core 解析出的 track 决定；像 spineboy 的 `aim`（只有单帧关键帧）时长为 0，时间轴会禁用——这是数据本身的样子。
 
+## 事件 · 语音与动画测试（右侧「事件」分页）
+
+事件 = **语音 + 动画**：以角色包的 `voice/index.json` 为唯一事件来源，按事件折叠分组试听台词，
+同时检查动画标签能否在当前模型里精确匹配。入口在右侧 320px 栏的「事件」分页（**不是弹窗**）：
+
+| 入口 | 行为 |
+| --- | --- |
+| 右侧栏「事件」分页 | 切到事件分页；tab 徽标 = 有问题的事件数（有语音缺失为红，否则仅动画未映射为黄） |
+| 文件 →「事件测试…」 | 打开侧栏并切到事件分页 |
+| 文件 →「载入语音包…」 | 调试入口：选一个 `voice/index.json`（只读，不写回；正常使用不需要） |
+| `?voice=<仓库相对路径>` | 深链载入语音索引；以 `/voice/index.json` 结尾时自动推导包根 |
+| 载入角色包后自动探测 | 按 `bundle.base` 及其最多 3 级祖先依次 GET `voice/index.json`，**首个 200 即停** |
+
+- **事件跟随角色包**：载入角色包后自动按 `base` 及最多 3 级祖先探测 `voice/index.json`，**正常使用不需要手动载入**；
+  `?voice=` / 文件菜单「载入语音包…」是调试入口，显式载入后自动探测不再覆盖（自动探测失败也不覆盖）。
+- **分组与筛选**：事件默认折叠，展开状态在搜索 / 分类 / 状态筛选后保留；分类 chips（全部 + agent / session /
+  interaction / easter_egg，带事件数）；搜索匹配事件名、台词 id、台词原文、动画名；状态下拉（全部 / 仅语音缺失 /
+  仅动画未映射 / 仅未检查 / 仅正常）；点事件行头部或箭头即可展开 / 折叠。
+- **播放**：单实例 `<audio>`，同一时间只播一条；行内播放/暂停、进度条 seek、`loadedmetadata` 显示时长、`ended` 复位；
+  事件级「试听」自动选第一条 `audioStatus === "ok"` 的台词。播放失败（解码 / 网络 / 自动播放拦截）在行内、播放条与
+  状态栏提示。「联动」默认开：播放台词时若动画标签在模型里精确存在，则 `setAnim` 并播放；未映射时只播语音并提示。
+  语音缺失禁用播放（`title` 写明路径），但行内「动画」按钮仍可单独预览（语音缺失时仍可看动画）。
+- **资源检查**：去重后的 `audio_file` 用 `fetch(url, {method:"HEAD", cache:"no-store"})` 探测（并发 ≤ 4，6s 超时）；
+  200 → ok，404 → missing，405 / 其它非 2xx 回退 GET 一次，网络异常 / 超时 → unknown。动画用当前
+  `model.animations` 的 key 精确匹配；未载入模型 → unknown。切包 / 切模型用 `loadGen` / `checkGen` 丢弃旧结果，
+  播放用 `playGen` 防止旧 Promise / 媒体事件复活按钮。
+- **缺失语义**：事件徽标 `error`（红）= 任一语音 missing；`warn`（黄）= 无语音缺失但有动画未映射；
+  `unknown`（灰）= 存在 checking / unknown / unresolved；`ok`（绿）= 全部命中。汇总分别计数
+  「语音缺失 a / 动画未映射 b / 未检查 c」（按台词行；同一行语音与动画都未知只算 1）。
+- **动画未映射 ≠ 包损坏**：`lines[].animation` 是语义标签（greeting / happy / working…），模型通常只有
+  idle / working / attention / done / failed / turn，所以多数事件会显示「动画未映射（模型无同名动画，需补语义→实际映射）」，
+  这是预期提示。展开行列出模型动画清单与原因，不做猜测映射（`voice.js` 支持显式 `animationAliases`，编辑器暂不传）。
+- **手动选择的索引**没有仓库路径：仅在当前角色包 `base` 自身或祖先目录里找到名字等于 `character_id` 的目录时
+  自动用该目录作包根（如 `base=.../deepseek/spine` → `.../deepseek`）；否则音频全部 `unresolved`，可在事件分页
+  填写「包根（仓库相对）」后重新解析 / 检查；不会继承上一个包的包根。
+- **索引警告**（未知字段 / `line_count` 不符 / 分类非法 / id 前缀不符等）在事件分页顶部单独展示，**不算事件异常**；
+  该分页不是模态，搜索框正常输入，`Esc` 只处理菜单 / 帮助 / 拖动 / 清除选择。
+- **停止时机**：切到「部件」分页、收起侧栏、停止按钮都会停止语音；「联动动画」关闭后只播语音。
+
 ## 调试面板 / `window.__characterEditor`
 
 调试分组里是只读诊断：骨骼 / IK 数量与约束名、网格附件清单（顶点 / 三角 / 是否加权）、
@@ -205,7 +250,9 @@ cd /tmp/spine-verify && node spine-verify.mjs /path/to/assets/characters/deepsee
 
 页面还挂了一个**只读调试句柄** `window.__characterEditor`（`state` / `core` / `frame()` / `renderer()` /
 `hitTest()` / `render()` / `fitView()` / `loadIndex()` / `loadRig()` / `loadFixture()` / `saveToDisk()` /
-`saveAsZip()` / `probeCapabilities()` / `saveReason()` / `archiveReason()` / `patchedModel()`），给本地校验与自动化断言用。
+`saveAsZip()` / `probeCapabilities()` / `saveReason()` / `archiveReason()` / `patchedModel()` /
+`voice()` / `loadVoice()` / `openVoice()` / `closeVoice()` / `playVoiceLine(event,id)` / `stopVoice()`），给本地校验与自动化断言用。
+`voice()` 返回**快照**（不是可变的 state 引用），可用于验收事件状态 / 缺失计数 / 播放状态。
 **它不是公开 API**，随时可能改，不要在业务代码里依赖。
 
 ## 已知限制
@@ -230,6 +277,15 @@ cd /tmp/spine-verify && node spine-verify.mjs /path/to/assets/characters/deepsee
 - 图集路径是相对的：示例按钮依赖 `../../assets/...` 这个位置关系；`?rig=` 先按**站点根相对路径**找（`/references/...`），找不到再按页面相对路径找，失败时把两条都列出来。
 - 官方编辑器的工程流程（`.spine` 导入导出、动画编辑、物理）**未测，也不在本工具范围**。
 
+- **语音包只读**：事件分页只读取 `voice/index.json` 与音频，不提供增删台词 / 改音频，也不写回；根 README 的
+  运行时语音播放仍是未完成项，编辑器测试 ≠ 运行时播放。
+- **动画按语义标签精确匹配**：未命中时显示「动画未映射」是预期（多数事件如此），不读 manifest、不硬编码别名；
+  需要映射时由调用方显式传 `animationAliases`（编辑器暂未开放入口）。
+- **手动选择的索引没有仓库路径**：不同名角色包需要先载入同角色包，或手填包根；填错包根只会得到 404/unknown，
+  界面会提示但不猜路径。
+- **资源检查只验证存在性**：HEAD/GET 探测不校验音频内容、时长与可解码性；解码 / 播放失败在播放时提示。
+  探测依赖服务对 HEAD 的响应（405 时回退 GET 一次），6s 超时记为 unknown。
+
 ## 自测
 
 起服务后打开：
@@ -238,12 +294,13 @@ cd /tmp/spine-verify && node spine-verify.mjs /path/to/assets/characters/deepsee
 http://127.0.0.1:8123/tools/character-editor/selftest.html
 ```
 
-页面跑 **764 条断言**（解析 / 矩阵 / IK oracle / 蒙皮 / 边界用例 / 退化数据，加上 `bundle.js` 的
-索引校验 / 路径文法 / 索引定位 / 贴图页对齐 / 模型补丁 / 保存请求响应 / CRC32 / ZIP store 结构），
+页面跑 **1043 条断言**（解析 / 矩阵 / IK oracle / 蒙皮 / 边界用例 / 退化数据，加上 `bundle.js` 的
+索引校验 / 路径文法 / 索引定位 / 贴图页对齐 / 模型补丁 / 保存请求响应 / CRC32 / ZIP store 结构，以及
+`voice.js` 的索引校验 / 事件分组 / summarize / 资源评估 / 路径与自动探测），
 结果在 `window.__selftestResult`（`failed === 0` 为通过）。回归截图放在 `output/review/`（gitignore）。
 
-`selftest.html` 与 `index.html` 都按 `spine-core.js → bundle.js → fixtures/cases.js` 的顺序加载；
-`bundle.js` 无 DOM / fetch，Node 里也能直接 require。
+`selftest.html` 与 `index.html` 都按 `icons.js → spine-core.js → bundle.js → voice.js → fixtures/cases.js → app.js` 的顺序加载；
+`bundle.js` / `voice.js` 无 DOM / fetch，Node 里也能直接 require。
 
 ## 图标集
 
@@ -251,7 +308,7 @@ http://127.0.0.1:8123/tools/character-editor/selftest.html
 
 | 文件 | 作用 |
 | --- | --- |
-| `icons.js` | 定义 46 个图标符号（`symbol#i-*`）并注入文档；对外暴露 `spineIcon(name)` |
+| `icons.js` | 定义 47 个图标符号（含 `voice`）（`symbol#i-*`）并注入文档；对外暴露 `spineIcon(name)` |
 | `icons-preview.html` | 图标一览页（含多尺寸缩放效果），改图标时先在这看 |
 
 新增图标：在 `icons.js` 的 `ICONS` 里加一条（`viewBox="0 0 16 16"`，只写内部路径），
@@ -261,15 +318,17 @@ http://127.0.0.1:8123/tools/character-editor/selftest.html
 
 | 文件 | 作用 |
 | --- | --- |
-| `index.html` | 语义 DOM（菜单条 / 视图条 / 画布 / 右栏 / 动画条 / 状态栏 / 帮助浮层）；script 顺序 `icons.js → spine-core.js → bundle.js → fixtures/cases.js → app.js` |
+| `index.html` | 语义 DOM（菜单条 / 视图条 / 画布 / 右栏分页「部件 / 事件」/ 动画条 / 状态栏 / 帮助浮层）；script 顺序 `icons.js → spine-core.js → bundle.js → voice.js → fixtures/cases.js → app.js` |
 | `ui.css` | 全部样式与设计令牌（颜色 / 间距 / 字号 / 圆角 / 焦点环） |
 | `app.js` | 应用层：载入、画布、状态、交互、撤销、保存 / 另存（渲染只调 core 的数学） |
 | `spine-core.js` | 纯数学与解析（atlas / model / 采样 / 矩阵 / IK / 蒙皮 / 命中 / 几何），无 DOM 依赖 |
 | `bundle.js` | 纯数据模块（`window.SpineBundle`）：索引校验 / 路径文法 / 索引定位 / 贴图页对齐 / 模型补丁 / 保存请求响应校验 / CRC32 / ZIP store，无 DOM / fetch / 磁盘 I/O |
+| `voice.js` | 纯数据模块（`window.SpineVoice`）：`voice/index.json` 校验 / 事件分组 / summarize / 资源评估（动画精确匹配、音频状态聚合）/ 路径解析 / 自动探测候选，无 DOM / fetch / Audio |
 | `fixtures/cases.js` | 内置样张与期望值（界面用 `example: true` 的部分，其余在 selftest 里跑断言） |
 | `selftest.html` / `selftest.js` | 断言页 |
 | `serve.py` / `start.sh` / `start.bat` | 本地服务与启动脚本：静态文件 + `GET /api/capabilities` + `POST /api/save-bundle` |
 | `assets/characters/deepseek/spine/index.json` / `.../legacy-views/index.json` | 两个真实索引（数据文件，入库） |
+| `assets/characters/deepseek/voice/index.json` | 事件语音索引（48 行 / 34 事件，只读数据；音频为 `voice/<event>/*.ogg`） |
 
 ## 为什么不用官方 Spine 编辑器
 
