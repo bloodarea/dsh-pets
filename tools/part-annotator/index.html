@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>立绘语义标注器</title>
+<link rel="stylesheet" href="ui.css">
+</head>
+<body>
+
+<!-- 图标雪碧图：16×16，线宽 1.6，颜色随文字 -->
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+  <symbol id="i-open" viewBox="0 0 16 16"><path d="M2 4.5h4l1.2 1.5H14v7.5H2z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 16 16"><path d="M2 4.5h4l1.2 1.5H14v7.5H2z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M2 7.5h12" stroke="currentColor" stroke-width="1.6"/></symbol>
+  <symbol id="i-save" viewBox="0 0 16 16"><path d="M3 2.5h8l2 2v9H3z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M5.5 2.5v3.5h5V2.5M5.5 10h5" fill="none" stroke="currentColor" stroke-width="1.4"/></symbol>
+  <symbol id="i-rect" viewBox="0 0 16 16"><rect x="2.5" y="3.5" width="11" height="9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-dasharray="2.2 1.6"/></symbol>
+  <symbol id="i-poly" viewBox="0 0 16 16"><path d="M2.5 9.5 5 3.5l5 1 3.5 5-4 4-6-1z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><circle cx="2.5" cy="9.5" r="1.1" fill="currentColor"/><circle cx="5" cy="3.5" r="1.1" fill="currentColor"/><circle cx="10" cy="4.5" r="1.1" fill="currentColor"/><circle cx="13.5" cy="9.5" r="1.1" fill="currentColor"/><circle cx="9.5" cy="13.5" r="1.1" fill="currentColor"/></symbol>
+  <symbol id="i-brush" viewBox="0 0 16 16"><path d="M9.2 2.8 13 6.6 8 11.6 4.2 7.8z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M4.2 7.8 2.5 13.5l5.5-1.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></symbol>
+  <symbol id="i-eraser" viewBox="0 0 16 16"><path d="M6 2.8 13 9.8l-3.2 3.2H5L2.8 10.8z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M6 2.8 2.8 6l3.4 3.4L9.4 6z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></symbol>
+  <symbol id="i-wand" viewBox="0 0 16 16"><path d="M2.5 13.5 10 6M8 3.5l.7 1.8 1.8.7-1.8.7L8 8.5l-.7-1.8-1.8-.7 1.8-.7zM12.5 8.5l.5 1.2 1.2.5-1.2.5-.5 1.2-.5-1.2-1.2-.5 1.2-.5z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 16 16"><path d="M1.5 8S3.8 3.8 8 3.8 14.5 8 14.5 8 12.2 12.2 8 12.2 1.5 8 1.5 8z" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="8" cy="8" r="2.1" fill="currentColor"/></symbol>
+  <symbol id="i-eye-off" viewBox="0 0 16 16"><path d="M1.5 8S3.8 3.8 8 3.8c1 0 1.9.2 2.7.6M14.5 8s-2.3 4.2-6.5 4.2c-1 0-1.9-.2-2.7-.6M2.5 2.5l11 11" fill="none" stroke="currentColor" stroke-width="1.5"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 16 16"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 16 16"><path d="M3.5 4.5h9M6 4.5V3h4v1.5M4.8 4.5l.6 8.7h5.2l.6-8.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></symbol>
+  <symbol id="i-merge" viewBox="0 0 16 16"><path d="M3 3.5h3.2c1.2 2.5 2.3 4 4.8 5M3 12.5h3.2c1.2-2.5 2.3-4 4.8-5M13 8h-2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
+  <symbol id="i-zoom-in" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10.5 10.5 14 14M5 7h4M7 5v4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+  <symbol id="i-zoom-out" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10.5 10.5 14 14M5 7h4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+  <symbol id="i-fit" viewBox="0 0 16 16"><path d="M2.5 6V2.5H6M10 2.5h3.5V6M13.5 10v3.5H10M6 13.5H2.5V10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+  <symbol id="i-undo" viewBox="0 0 16 16"><path d="M5 5H9.5a4 4 0 1 1 0 8H4M5 5l-2.5 2.5M5 5 2.5 2.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-redo" viewBox="0 0 16 16"><path d="M11 5H6.5a4 4 0 1 0 0 8H12M11 5l2.5 2.5M11 5l2.5-2.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-panel" viewBox="0 0 16 16"><rect x="2.5" y="3" width="11" height="10" rx="1" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 3v10" stroke="currentColor" stroke-width="1.5"/></symbol>
+  <symbol id="i-layers" viewBox="0 0 16 16"><path d="M8 2.5 14 6l-6 3.5L2 6z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M2 9.5 8 13l6-3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></symbol>
+  <symbol id="i-select" viewBox="0 0 16 16"><path d="M4 2.5v9.5l2.5-2.5H10z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></symbol>
+  <symbol id="i-close" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+</svg>
+
+<header class="topbar">
+  <div class="menubar" role="menubar" aria-label="菜单栏">
+    <div class="menu-wrap">
+      <button id="btnMenuFile" class="menubtn" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="menuFile">文件</button>
+      <div id="menuFile" class="menu" role="menu" hidden>
+        <button type="button" role="menuitem" data-cmd="load-source"><svg class="ic"><use href="#i-open"></use></svg><span>载入原立绘…</span><kbd>Ctrl+O</kbd></button>
+        <button type="button" role="menuitem" data-cmd="load-split"><svg class="ic"><use href="#i-layers"></use></svg><span>载入现有拆分件…</span></button>
+        <button type="button" role="menuitem" data-cmd="load-bundle"><svg class="ic"><use href="#i-folder"></use></svg><span>打开拆件包…</span></button>
+        <button type="button" role="menuitem" data-cmd="load-bundle-path"><svg class="ic"><use href="#i-open"></use></svg><span>按路径打开拆件包…</span></button>
+        <button type="button" role="menuitem" data-cmd="open-project"><svg class="ic"><use href="#i-folder"></use></svg><span>打开旧标注工程…</span></button>
+        <hr>
+        <button type="button" role="menuitem" data-cmd="save"><svg class="ic"><use href="#i-save"></use></svg><span>保存拆件包（写回当前包）</span><kbd>Ctrl+S</kbd></button>
+        <button type="button" role="menuitem" data-cmd="save-as"><svg class="ic"><use href="#i-save"></use></svg><span>另存拆件包…</span><kbd>Ctrl+Shift+S</kbd></button>
+        <button type="button" role="menuitem" data-cmd="export-zip"><svg class="ic"><use href="#i-save"></use></svg><span>导出拆件包 ZIP</span></button>
+      </div>
+    </div>
+    <div class="menu-wrap">
+      <button id="btnMenuEdit" class="menubtn" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="menuEdit">编辑</button>
+      <div id="menuEdit" class="menu" role="menu" hidden>
+        <button type="button" role="menuitem" data-cmd="undo"><svg class="ic"><use href="#i-undo"></use></svg><span>撤销</span><kbd>Ctrl+Z</kbd></button>
+        <button type="button" role="menuitem" data-cmd="redo"><svg class="ic"><use href="#i-redo"></use></svg><span>重做</span><kbd>Ctrl+Shift+Z</kbd></button>
+        <hr>
+        <button type="button" role="menuitem" data-cmd="assign"><span>选区赋给当前件</span><kbd>Enter</kbd></button>
+        <button type="button" role="menuitem" data-cmd="subtract"><span>从当前件减去选区</span><kbd>Del</kbd></button>
+        <button type="button" role="menuitem" data-cmd="new-from-selection"><span>用选区新建部件</span><kbd>Ctrl+Shift+N</kbd></button>
+        <button type="button" role="menuitem" data-cmd="clear-selection"><span>取消选区</span><kbd>Esc</kbd></button>
+      </div>
+    </div>
+    <div class="menu-wrap">
+      <button id="btnMenuView" class="menubtn" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="menuView">视图</button>
+      <div id="menuView" class="menu" role="menu" hidden>
+        <button type="button" role="menuitem" data-cmd="fit"><span>适配全部</span><kbd>F</kbd></button>
+        <button type="button" role="menuitem" data-cmd="zoom-in"><span>放大</span><kbd>+</kbd></button>
+        <button type="button" role="menuitem" data-cmd="zoom-out"><span>缩小</span><kbd>-</kbd></button>
+        <button type="button" role="menuitem" data-cmd="actual"><span>实际大小 (100%)</span></button>
+        <hr>
+        <button type="button" role="menuitem" data-cmd="toggle-mask"><span>掩码着色</span><kbd>M</kbd></button>
+        <button type="button" role="menuitem" data-cmd="toggle-outline"><span>选中件描边</span></button>
+        <button type="button" role="menuitem" data-cmd="toggle-base"><span>底图</span></button>
+      </div>
+    </div>
+    <div class="menu-wrap">
+      <button id="btnMenuHelp" class="menubtn" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="menuHelp">帮助</button>
+      <div id="menuHelp" class="menu" role="menu" hidden>
+        <button type="button" role="menuitem" data-cmd="help"><span>快捷键与工作流</span><kbd>?</kbd></button>
+        <button type="button" role="menuitem" data-cmd="selftest"><span>打开自测页</span></button>
+      </div>
+    </div>
+    <span class="spacer"></span>
+    <span class="app-title">立绘语义标注器</span>
+  </div>
+
+  <!-- 工具条 -->
+  <div class="bar bar-tools" role="toolbar" aria-label="标注工具">
+    <div class="toolgrp" role="group" aria-label="标注模式">
+      <button id="modeParts" class="btn mode" type="button" data-mode="parts" aria-pressed="true" title="部件语义标注（可见区归属 / 补全）">部件</button>
+      <button id="modeIssues" class="btn mode" type="button" data-mode="issues" aria-pressed="false" title="拆分问题标注（边缘缺失 / 毛边 / 拆多 / 拆少…）">问题</button>
+    </div>
+    <span class="vsep"></span>
+    <div class="toolgrp" role="group" aria-label="选区工具">
+      <button id="toolSelect" class="btn tool" type="button" data-tool="select" title="选择/平移（V）">
+        <svg class="ic"><use href="#i-select"></use></svg><span>选择</span><kbd>V</kbd>
+      </button>
+      <button id="toolRect" class="btn tool" type="button" data-tool="rect" title="矩形选框（R）">
+        <svg class="ic"><use href="#i-rect"></use></svg><span>矩形</span><kbd>R</kbd>
+      </button>
+      <button id="toolPoly" class="btn tool" type="button" data-tool="poly" title="多边形套索（P）：点顶点，双击/Enter 闭合">
+        <svg class="ic"><use href="#i-poly"></use></svg><span>多边形</span><kbd>P</kbd>
+      </button>
+    </div>
+    <span class="vsep"></span>
+    <div class="toolgrp" role="group" aria-label="绘制工具">
+      <button id="toolBrush" class="btn tool" type="button" data-tool="brush" title="画笔（B）">
+        <svg class="ic"><use href="#i-brush"></use></svg><span>画笔</span><kbd>B</kbd>
+      </button>
+      <button id="toolEraser" class="btn tool" type="button" data-tool="eraser" title="橡皮（E）">
+        <svg class="ic"><use href="#i-eraser"></use></svg><span>橡皮</span><kbd>E</kbd>
+      </button>
+      <button id="toolWand" class="btn tool" type="button" data-tool="wand" title="颜色魔法棒（W）：按容差选中同色区域">
+        <svg class="ic"><use href="#i-wand"></use></svg><span>魔法棒</span><kbd>W</kbd>
+      </button>
+    </div>
+    <span class="vsep"></span>
+    <label class="pick" title="画笔直径（像素）">
+      <span class="lbl">笔刷</span>
+      <input id="brushSize" type="range" min="1" max="120" step="1" value="18">
+      <span id="brushSizeV" class="val mono">18</span>
+    </label>
+    <label class="pick" title="魔法棒颜色容差（0–255，每通道最大差）">
+      <span class="lbl">容差</span>
+      <input id="tolerance" type="range" min="0" max="120" step="1" value="28">
+      <span id="toleranceV" class="val mono">28</span>
+    </label>
+    <label class="toggle" title="选区落点自动赋给当前部件；关闭后需点「赋给当前件」">
+      <input id="autoAssign" type="checkbox" checked><span>选区自动赋值</span>
+    </label>
+    <label class="toggle" title="显示掩码着色">
+      <input id="showMask" type="checkbox" checked><span>掩码</span>
+    </label>
+    <label class="toggle" title="显示选中件描边">
+      <input id="showOutline" type="checkbox" checked><span>描边</span>
+    </label>
+    <label class="toggle" title="显示原立绘底图">
+      <input id="showBase" type="checkbox" checked><span>底图</span>
+    </label>
+    <label class="toggle" title="显示问题标注层">
+      <input id="showIssuesChk" type="checkbox" checked><span>问题层</span>
+    </label>
+    <span class="spacer"></span>
+    <button id="btnFit" class="btn" type="button" title="适配全部（F）"><svg class="ic"><use href="#i-fit"></use></svg><span>适配</span></button>
+    <div class="zoomgrp" role="group" aria-label="缩放">
+      <button id="btnZoomOut" class="btn btn-icon" type="button" title="缩小（-）"><svg class="ic"><use href="#i-zoom-out"></use></svg></button>
+      <span id="zoomLabel" class="zoom-val mono dim">—</span>
+      <button id="btnZoomIn" class="btn btn-icon" type="button" title="放大（+）"><svg class="ic"><use href="#i-zoom-in"></use></svg></button>
+    </div>
+    <button id="btnSave" class="btn primary" type="button" title="保存到 workspace（Ctrl+S）"><svg class="ic"><use href="#i-save"></use></svg><span>保存</span></button>
+    <button id="btnPanel" class="btn panel-open-btn" type="button" aria-controls="inspector" title="展开右侧面板（窄屏为抽屉）"><svg class="ic"><use href="#i-panel"></use></svg><span>展开</span></button>
+  </div>
+</header>
+
+<main>
+  <div id="stage" class="stage">
+    <canvas id="cv" aria-label="标注画布：左键用当前工具，空格/中键平移，滚轮缩放"></canvas>
+
+    <div id="emptyState" class="stage-overlay">
+      <div class="card">
+        <h1>立绘语义标注器</h1>
+        <p>载入一张原立绘，然后用矩形 / 多边形 / 画笔把画面按部件切开。每一件就是一个语义层；<br>
+           也可以载入本仓库已有的拆分件作为候选掩码，再改错、挪像素、合并或拆分。</p>
+        <div class="actions">
+          <button id="btnEmptyLoad" class="btn primary" type="button"><svg class="ic"><use href="#i-open"></use></svg><span>载入原立绘</span></button>
+          <button id="btnEmptySplit" class="btn" type="button"><svg class="ic"><use href="#i-layers"></use></svg><span>载入现有拆分件</span></button>
+        </div>
+        <p class="foot">直接拖一张 PNG 进画布也可以；深链：?source=assets/source/deepseek/three-view/front.png&amp;parts=workspace/characters/deepseek/output/parts/manifest.json</p>
+      </div>
+    </div>
+
+    <div id="dropHint" class="drop-hint" hidden>松手载入</div>
+
+    <div id="selectionBar" class="selection-bar" hidden>
+      <span id="selectionInfo" class="mono"></span>
+      <button id="selAssign" class="btn primary" type="button" title="把选区像素赋给当前部件（Enter）">赋给当前件</button>
+      <button id="selSubtract" class="btn" type="button" title="从当前部件减去选区（Del）">从当前件减去</button>
+      <button id="selNew" class="btn" type="button" title="用选区新建部件（Ctrl+Shift+N）">新建部件</button>
+      <button id="selClear" class="btn btn-icon" type="button" title="取消选区（Esc）"><svg class="ic"><use href="#i-close"></use></svg></button>
+    </div>
+  </div>
+
+  <aside id="inspector" class="inspector" aria-label="部件与检查器">
+    <div class="inspector-head">
+      <div class="tabs" role="tablist">
+        <button id="tabParts" class="tab active" role="tab" aria-selected="true" type="button">部件</button>
+        <button id="tabIssues" class="tab" role="tab" aria-selected="false" type="button">问题</button>
+        <button id="tabHelp" class="tab" role="tab" aria-selected="false" type="button">说明</button>
+      </div>
+      <button id="btnPanelClose" class="btn btn-icon" type="button" title="收起面板"><svg class="ic"><use href="#i-close"></use></svg></button>
+    </div>
+
+    <section id="paneParts" class="pane">
+      <div class="pane-block">
+        <div class="block-head">
+          <span>部件层级</span>
+          <span class="dim mono" id="partsCount">0</span>
+        </div>
+        <div class="row-actions">
+          <button id="btnAddPart" class="btn" type="button"><svg class="ic"><use href="#i-plus"></use></svg><span>新建</span></button>
+          <button id="btnMerge" class="btn" type="button" title="把选中部件合并到当前部件"><svg class="ic"><use href="#i-merge"></use></svg><span>合并</span></button>
+          <button id="btnDeletePart" class="btn danger" type="button" title="删除当前部件（其像素转为未标注）"><svg class="ic"><use href="#i-trash"></use></svg><span>删除</span></button>
+        </div>
+        <label class="search"><input id="partSearch" type="search" placeholder="搜索部件名…" aria-label="搜索部件"></label>
+        <ul id="partList" class="part-list" role="listbox" aria-label="部件层级（上=前）"></ul>
+        <p class="hint dim">上=更靠前（z 大）。行内 <kbd>↑</kbd><kbd>↓</kbd> 调层级，眼睛切显隐（不影响导出）。</p>
+      </div>
+
+      <div class="pane-block">
+        <div class="block-head"><span>检查器</span><span class="dim mono" id="activePartId">—</span></div>
+        <div class="fields">
+          <label class="field"><span>名称</span><input id="partName" type="text" maxlength="80" placeholder="part name"></label>
+          <label class="field"><span>ID</span><input id="partId" type="text" maxlength="64" placeholder="kebab-case-id" readonly></label>
+          <label class="field"><span>颜色</span><input id="partColor" type="color" value="#ff6b6b"></label>
+          <label class="field"><span>通道</span>
+            <select id="channel">
+              <option value="visible">可见区（母版露出）</option>
+              <option value="hidden">被遮挡补全</option>
+            </select>
+          </label>
+          <label class="field"><span>备注</span><input id="partNote" type="text" maxlength="200" placeholder="遮挡关系 / 推测说明"></label>
+        </div>
+        <div class="kv">
+          <div><dt>像素</dt><dd id="statPx" class="mono">0</dd></div>
+          <div><dt>可见占比</dt><dd id="statPct" class="mono">0%</dd></div>
+          <div><dt>z</dt><dd id="statZ" class="mono">0</dd></div>
+          <div><dt>通道</dt><dd id="statChannel">visible</dd></div>
+        </div>
+        <p class="hint dim">「被遮挡补全」通道用于画母版上看不见、但部件本身应有的延伸；不画则导出为 hidden-only。</p>
+      </div>
+    </section>
+
+    <section id="paneIssues" class="pane" hidden>
+      <div class="pane-block">
+        <div class="block-head"><span>问题清单</span><span class="dim mono" id="issuesCount">0</span></div>
+        <div class="row-actions">
+          <button id="btnAddIssue" class="btn" type="button"><svg class="ic"><use href="#i-plus"></use></svg><span>新建问题</span></button>
+          <button id="btnDeleteIssue" class="btn danger" type="button"><svg class="ic"><use href="#i-trash"></use></svg><span>删除</span></button>
+        </div>
+        <ul id="issueList" class="part-list" role="listbox" aria-label="问题清单"></ul>
+        <p class="hint dim">在画布上用矩形 / 多边形 / 魔法棒标出问题区域（可累加多块）：
+          <b>问题位置</b>（必填）、<b>改动后</b>（可选）；<b>改动前</b>直接点选一个已拆分部件。</p>
+      </div>
+
+      <div class="pane-block">
+        <div class="block-head"><span>问题属性</span><span class="dim mono" id="activeIssueId">—</span></div>
+        <div class="fields">
+          <label class="field"><span>类型</span>
+            <select id="issueType">
+              <option value="edge-missing">边缘缺失</option>
+              <option value="jagged">毛边 / 锯齿</option>
+              <option value="under-split">拆少了（缺一块）</option>
+              <option value="over-split">拆多了（混入别的件）</option>
+              <option value="wrong-part">归属错误（该归别的件）</option>
+              <option value="completion">补全质量（颜色/笔触/透明）</option>
+              <option value="other">其他</option>
+            </select>
+          </label>
+          <label class="field"><span>严重度</span>
+            <select id="issueSeverity">
+              <option value="1">低</option>
+              <option value="2" selected>中</option>
+              <option value="3">高</option>
+            </select>
+          </label>
+          <label class="field"><span>关联件</span><select id="issuePart"></select></label>
+          <label class="field"><span>改动前件</span><select id="issueBeforePart"></select></label>
+          <label class="field"><span>备注</span><input id="issueNote" type="text" maxlength="240" placeholder="例：右侧发梢缺 3px / 边缘有白边"></label>
+        </div>
+        <div class="seg" role="group" aria-label="标注目标">
+          <button id="targetRegion" class="btn segbtn" type="button" data-target="region" aria-pressed="true">问题位置</button>
+          <button id="targetBefore" class="btn segbtn" type="button" data-target="before" aria-pressed="false">改动前</button>
+          <button id="targetAfter" class="btn segbtn" type="button" data-target="after" aria-pressed="false">改动后</button>
+        </div>
+        <p class="hint dim" id="beforePartState" style="margin:6px 0 0">（未指定）</p>
+        <div class="row-actions">
+          <button id="btnBeforePick" class="btn" type="button">在画布上点选部件</button>
+          <button id="btnBeforeClear" class="btn" type="button">清除改动前</button>
+        </div>
+        <div class="kv">
+          <div><dt>位置 px</dt><dd id="issuePxRegion" class="mono">0</dd></div>
+          <div><dt>改动前 px</dt><dd id="issuePxBefore" class="mono">0</dd></div>
+          <div><dt>改动后 px</dt><dd id="issuePxAfter" class="mono">0</dd></div>
+          <div><dt>数量</dt><dd id="issuePxTotal" class="mono">0</dd></div>
+        </div>
+        <p class="hint dim"><b>问题位置 / 改动后</b>：矩形、多边形、魔法棒都能用，每画一次就累加一块（互不相邻会显示成 2 块、3 块…），
+          切到别的目标/模式就停止添加。<b>改动前</b>不画选区：直接点画布上（或上面下拉）选一个已拆分的部件，
+          表示这个问题发生在哪一件。</p>
+        <p class="hint dim">保存拆件包时会写出 <code>issues.json</code> 与 <code>issues/&lt;id&gt;[-before|-after].png</code>。</p>
+      </div>
+    </section>
+
+    <section id="paneHelp" class="pane" hidden>
+      <div class="pane-block help-text">
+        <p><b>这个工具做什么</b></p>
+        <p>主要功能是<b>标注与反馈</b>，不替你执行拆分：<br>
+          · <b>部件</b>：定义可见区归属与补全范围（语义层）；<br>
+          · <b>问题</b>：指出拆分结果哪里不对（边缘缺失、毛边、拆少、拆多、归属错误、补全质量）；
+          「问题位置」用矩形/多边形/魔法棒可累加多块，「改动前」点选是哪一个已拆分的件，
+          「改动后」画期望区域——三者一起作为返修输入。</p>
+        <p><b>工作流</b></p>
+        <ol>
+          <li>文件 → 载入原立绘（来自 <code>assets/source/…/three-view</code>），或直接把 PNG 拖进画布。</li>
+          <li>文件 → 载入现有拆分件（来自 <code>workspace/characters/*/output/parts/*/manifest.json</code>），
+              按 z 序把每件 alpha 填成候选掩码；或直接「打开拆件包」继续改。</li>
+          <li><b>部件模式</b>：新建/选中部件，用矩形或多边形框选区域赋给当前件；
+              同色相邻用魔法棒按颜色取块，再用矩形/多边形修边界。</li>
+          <li><b>问题模式</b>：切到「问题」→ 新建问题（选类型/严重度/关联件）→
+              用矩形 / 多边形 / 魔法棒在画布上标「问题位置」（必填，可多次累加、可多块）→ 按需切「改动后」继续框选；
+              「改动前」不用画：直接点画布上的某个拆分部件（或右侧「改动前件」下拉），表示问题发生在哪一件。</li>
+          <li>Ctrl+S 写回当前拆件包（未打开包时先命名）；Ctrl+Shift+S 另存；文件 → 导出拆件包 ZIP。</li>
+        </ol>
+        <p><b>快捷键</b>：V 选择 · R 矩形 · P 多边形 · B 画笔 · E 橡皮 · W 魔法棒 · M 掩码 · I 问题层 ·
+          F 适配 · Ctrl+Z / Ctrl+Shift+Z 撤销/重做 · Ctrl+S 写回 · Ctrl+Shift+S 另存 · Ctrl+O 载入原图 ·
+          Enter 赋值 / 闭合多边形 · Del 擦除 / 减去 · Esc 取消选区 · ? 帮助</p>
+        <p><b>多边形</b>：单击加顶点，双击 / Enter 闭合，Backspace 去掉上一个点，Esc 取消。</p>
+        <p><b>导出约定</b>：掩码与标注永远同一画布（原图像素尺寸）；<code>-l</code>=角色左=画面右；
+          z 大=靠前；<code>hidden/</code> 与 <code>cuts-hidden/</code> 只在画过补全通道时出现；
+          问题写 <code>issues.json</code> 与 <code>issues/&lt;id&gt;[-before|-after].png</code>。</p>
+      </div>
+    </section>
+  </aside>
+</main>
+
+<footer class="statusbar">
+  <span id="statusMsg">载入一张原立绘开始</span>
+  <span id="statusHint" class="dim">矩形框选 · 多边形套索 · 魔法棒 · 掩码即语义</span>
+</footer>
+
+<!-- 对话框：载入原图 / 载入拆分件 / 打开工程 / 帮助浮层 -->
+<div id="dialog" class="dialog" hidden role="dialog" aria-modal="true" aria-labelledby="dialogTitle">
+  <div class="dialog-card">
+    <div class="dialog-head">
+      <h2 id="dialogTitle">载入</h2>
+      <button id="dialogClose" class="btn btn-icon" type="button" aria-label="关闭"><svg class="ic"><use href="#i-close"></use></svg></button>
+    </div>
+    <p id="dialogDesc" class="dim"></p>
+    <ul id="dialogList" class="dialog-list"></ul>
+    <div class="dialog-foot">
+      <input id="dialogFile" type="file" accept="image/png,image/webp,image/jpeg" hidden>
+      <button id="dialogLocal" class="btn" type="button" hidden>从本地文件选择…</button>
+      <button id="dialogCancel" class="btn" type="button">取消</button>
+    </div>
+  </div>
+</div>
+
+<input id="dragFiles" type="file" accept="image/*" hidden>
+<script src="core.js"></script>
+<script src="bundle.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
