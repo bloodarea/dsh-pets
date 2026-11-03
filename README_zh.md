@@ -111,6 +111,21 @@ assets/characters/                 # 内置，只读
 
 **目前尚未提供经过验证的跨平台稳定版本。** 可安装版本发布后，将在这里补充安装命令、适配的 DSH 版本及系统要求。上游 Windows 版 `dsh-pet` 的安装方式不应直接视为本项目的安装说明。
 
+### 当前插件形态（开发中）
+
+本仓已经可以按 Host-only Cordis bundle 安装：`package.json` 声明 `dsh.bundle.patch`，`cordis.patch.yml` 激活入口，`index.js` 把随包分发的 `skills/<name>/SKILL.md` 注册成 Agent 技能。因此角色制作技能 `three-view-parts` 会直接出现在技能目录里，不需要再拷进 `.agents/skills`。
+
+```bash
+# 把当前 checkout 链接进 profile（以 web 为例）
+dsh plugin --profile web add /path/to/dsh-pets
+
+# 安装后重启 Harness 激活 bundle；技能会出现在会话技能目录里，可直接按名字加载
+# 卸载
+dsh plugin --profile web remove dsh-pets
+```
+
+当前阶段插件只负责注册技能；桌宠窗口、会话跟踪、语音播放与系统托盘仍按上面的路线图推进。
+
 ## 可靠性、隐私与资源占用
 
 重点遵循以下设计原则：

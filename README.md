@@ -111,6 +111,22 @@ The roadmap is indicative and may change as implementation and compatibility tes
 
 **No stable cross-platform release is documented yet.** Once an installable version is available, installation steps and supported DSH versions will be published here. Please do not assume the original Windows-only `dsh-pet` installation instructions apply to this project.
 
+### Current plugin shape (development)
+
+The repository is already installable as a Host-only Cordis bundle: `package.json` declares `dsh.bundle.patch`, `cordis.patch.yml` activates the entry, and `index.js` registers every bundled `skills/<name>/SKILL.md` as an agent skill. As a result the character-pipeline skill `three-view-parts` appears in the skill catalog without being copied into `.agents/skills`.
+
+```bash
+# Link this checkout into a profile (example: the web profile)
+dsh plugin --profile web add /path/to/dsh-pets
+
+# Restart Harness afterwards so the bundle is activated; the skill then appears
+# in the session skill catalog and can be loaded by name.
+# Uninstall
+dsh plugin --profile web remove dsh-pets
+```
+
+At this stage the bundle only registers skills. The pet window, session tracking, voice playback, and tray integration remain planned work; see the roadmap above.
+
 ## Reliability, privacy, and resource usage
 
 Design priorities:
