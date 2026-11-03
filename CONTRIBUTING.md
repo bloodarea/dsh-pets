@@ -8,7 +8,8 @@
 
 | 路径 | 入库 | 说明 |
 | --- | :---: | --- |
-| `src/` `client.js` `server.js` 等源码 | ✅ | 插件实现本体 |
+| `index.js` `src/` `client.js` `server.js` 等源码 | ✅ | 插件实现本体（Host 入口 / 前端半） |
+| `cordis.patch.yml` `locale/` `icon.svg` | ✅ | 激活补丁与插件显示元数据（标题 / 描述 / 图标） |
 | `package.json` `pnpm-lock.yaml` `.gitignore` 等声明 | ✅ | 锁定依赖与工具链 |
 | `README.md` `README_zh.md` `CONTRIBUTING.md` `AGENTS.md` | ✅ | 对外文档与协作约定 |
 | `scripts/` | ✅ | 构建 / 校验 / 发布脚本 |
@@ -17,10 +18,11 @@
 | `assets/characters/deepseek/**` | ✅ | **默认角色包**（Spine 模型、语音、preview），随程序打包 |
 | `assets/characters/index.json` | ✅ | 可下载角色索引（版本 / sha256 / 下载地址） |
 | `assets/source/**` | ✅ | **拆件精修工作区**：三视图源、拆分部件、表情差分与 manifest（构建输入，不参与运行时加载） |
+| `skills/**` | ✅ | **插件内置技能**：随包分发的 `skills/<name>/SKILL.md`，由插件入口注册；与仅本地的 `.agents/skills/` 严格区分（见 §5b） |
 | `assets/characters/<其他 id>/**` | ❌ | 其他角色按需下载，运行时落 `~/.dsh/pets/characters/` |
 | **`docs/**`（文档、设计稿、调研笔记、PDF/Office 文件）** | ❌ | 内部文档只在本地保存 |
 | **`docs/assets/*.png` 等图片** | ✅ | README 需要引用的图片与截图（**唯一例外**） |
-| **`references/`** | ❌ | 参考项目源码、技术实验、验证脚本、抓包与实验数据 |
+| **`references/`**（仓库根） | ❌ | 参考项目源码、技术实验、验证脚本、抓包与实验数据 |
 | **`.agents/`**（项目技能） | ❌ | 仅本地：DSH 从 `.agents/skills/<name>/SKILL.md` 发现技能 |
 | `experiments/` `playground/` `sandbox/` | ❌ | 一次性技术验证，同上 |
 | `node_modules/` `dist/` `build/` `out/` `coverage/` | ❌ | 依赖与构建产物，可由安装/构建重建 |
@@ -95,6 +97,8 @@
 
 确需引用第三方代码时的做法：**要么重写，要么只取最小片段 + 在 `THIRD-PARTY-NOTICES.md` 记录出处、许可证与改动**；第三方依赖一律走 `package.json`，不要 vendored 拷贝。
 
+规则只作用于**仓库根**（`.gitignore` 里的前导 `/`）：`skills/<name>/references/` 是技能随包资源，会正常入库（见 §5b）。
+
 ## 5. `.agents/`：项目技能（仅本地）
 
 `<projectRoot>/.agents/skills` 是 DSH 的项目级技能发现路径（来源 `project-agents`，rank 200）：
@@ -113,6 +117,39 @@
 - 需要对外分享的技能，另写脱敏版放进 `docs/`（本地）或直接写进 `README.md`；
 - 不要在 `.agents/skills/` 下放 `README.md`——它会被当成扁平 skill 扫描，缺 frontmatter 会告警；
 - 更高优先级的 `<projectRoot>/.dsh/skills`（rank 100）已被 `.dsh/` 规则覆盖，同样只在本机。
+
+## 5b. `skills/`：插件内置技能（随包分发）
+
+与 `.agents/` 相对：**属于产品、要随包分发的技能放 `skills/` 并入库**；只对本机有效的操作习惯放
+`.agents/skills/`。DSH 不会自动把插件包里的目录当成技能根——必须由插件入口注册：
+
+- 形态一（自带 provider）：插件激活时用 `@deepseek-ai/dsh-skill-filesystem` 的
+  `FileSystemSkillProvider`，只扫本包 `skills/`（`includeDefaultRoots: false` +
+  `customSkillDirs: [<pkg>/skills]`），经 `ctx.skills.registerProvider()` 挂上；
+  参考 `dsh-brooks-lint-dsh`。
+- 形态二（内嵌注册）：激活时读 `skills/<name>/SKILL.md` 文本，`ctx.skills.register(skill)`
+  注册成进程内 `runtime` provider，不落扫描根；参考 `dsh-agent-team-ui-testing`。
+
+**本仓当前实现**：采用形态二，入口在 `index.js`。激活时扫描 `skills/` 的直接子项（目录
+bundle 或扁平 `.md`），解析 frontmatter 后逐个 `ctx.skills.register()`；单条技能解析失败
+只告警并跳过。这样插件不依赖 `@deepseek-ai/dsh-skill-filesystem`——本仓以 `link:` 方式装进
+profile，链接目录没有自己的 `node_modules`，零安装即可激活。取舍：SKILL.md 只在激活时读取，
+改完需重载插件行或重启 Harness；frontmatter 只支持平铺的 `key: value` 单行标量。技能数量
+增多、需要热更新时，再按形态一换成 `FileSystemSkillProvider` 并补依赖。
+
+```text
+skills/
+└── <skill-name>/
+    ├── SKILL.md          # YAML frontmatter 必填 name（kebab-case）与 description
+    └── references/       # 可选：prompt 模板、清单等 bundle 资源
+```
+
+- 目录只扫直接子项：`skills/<name>/SKILL.md`；**不要在 `skills/` 根放 `README.md`**（会被当扁平 skill 扫描）。
+- 打包：package.json 的 `files` 必须包含 `skills`（或 `skills/**`），否则 npm 包不携带。
+- 当前内置技能：`three-view-parts`（三视图 → 部件贴图）。
+- **公开技能必须环境无关**：不写本机网关地址、模型 id、本机路径、个人脚本；这些差异放
+  `.agents/skills/` 的指针技能，由它指向公开技能（例：`three-view-parts` ↔
+  `three-view-parts-local`）。公开发布的内容要让陌生人只凭技能正文就能执行。
 
 ## 6. 提交前自检
 

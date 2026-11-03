@@ -7,11 +7,12 @@
 
 # --- 1. 本地参考资料：第三方参考项目 / 技术实验与验证脚本 ------------------
 # 只在本机保留，永不入库：体积大、多为第三方代码、含实验痕迹与可能的许可证冲突。
-references/
-reference/
-experiments/
-playground/
-sandbox/
+# 前导 / 只锚定仓库根：`skills/<name>/references/` 是随包分发的技能资源，不属于此列。
+/references/
+/reference/
+/experiments/
+/playground/
+/sandbox/
 
 # --- 2. 内部文档：docs/ 下的文档资源不入库 --------------------------------
 # 唯一例外：README 需要引用的图片 / 截图，统一放 docs/assets/，且必须是图片格式。
