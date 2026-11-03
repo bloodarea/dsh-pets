@@ -23,6 +23,7 @@
 | **`docs/**`（文档、设计稿、调研笔记、PDF/Office 文件）** | ❌ | 内部文档只在本地保存 |
 | **`docs/assets/*.png` 等图片** | ✅ | README 需要引用的图片与截图（**唯一例外**） |
 | **`references/`**（仓库根） | ❌ | 参考项目源码、技术实验、验证脚本、抓包与实验数据 |
+| **`workspace/`**（仓库根） | ❌ | 部件拆分工作现场与运行环境（模型权重、拆件中间产物） |
 | **`.agents/`**（项目技能） | ❌ | 仅本地：DSH 从 `.agents/skills/<name>/SKILL.md` 发现技能 |
 | `experiments/` `playground/` `sandbox/` | ❌ | 一次性技术验证，同上 |
 | `node_modules/` `dist/` `build/` `out/` `coverage/` | ❌ | 依赖与构建产物，可由安装/构建重建 |
@@ -98,6 +99,17 @@
 确需引用第三方代码时的做法：**要么重写，要么只取最小片段 + 在 `THIRD-PARTY-NOTICES.md` 记录出处、许可证与改动**；第三方依赖一律走 `package.json`，不要 vendored 拷贝。
 
 规则只作用于**仓库根**（`.gitignore` 里的前导 `/`）：`skills/<name>/references/` 是技能随包资源，会正常入库（见 §5b）。
+
+## 4b. `workspace/`：部件拆分与运行环境（仅本地）
+
+用于「三视图 → 部件拆分」的实际工作现场，以及本机运行环境（模型权重、推理依赖等）。**整目录不入库**：
+
+1. 拆件中间产物（切片、蒙版、实验性图集）与模型文件体积大，且可由源素材与工具链重建；
+2. 模型与工具通常带独立许可证，未核实来源就入库等于再分发；
+3. 工作现场含调试痕迹与本机路径，不适合作为团队共享产物。
+
+需要长期保留的产出放 `assets/source/`（图片 + `manifest.json`，见 §3b），结论与复现步骤放 `docs/`（本地）。
+与 `references/` 一样，`scripts/verify-hygiene.sh` 也会拦住 `git add -f`。
 
 ## 5. `.agents/`：项目技能（仅本地）
 

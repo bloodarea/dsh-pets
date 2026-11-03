@@ -94,6 +94,9 @@ for f in "${files[@]}"; do
     # --- 规则 1：本地参考 / 实验目录（仅仓库根；skills/*/references/ 属于随包资源）---
     references/*|reference/*|experiments/*|playground/*|sandbox/*)
       block "$f" "本地参考项目与实验目录不入库（体积大、第三方代码、许可证风险）"; continue ;;
+    # --- 规则 1b：本地工作区（部件拆分 / 模型与运行环境）---
+    workspace/*)
+      block "$f" "workspace/ 是本地拆件与运行环境目录，不入库（模型 / 中间产物体积大、可重建、许可证待核实）"; continue ;;
     # --- 规则 2：docs 只放 README 用图 ---
     docs/*)
       if ! is_docs_asset "$f"; then
