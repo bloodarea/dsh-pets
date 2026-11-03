@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "DSH Pets",
+    "description": "Desktop pet companion for DeepSeek Harness (early development). Registers the bundled character-pipeline skills, such as three-view-parts."
+  }
+}
