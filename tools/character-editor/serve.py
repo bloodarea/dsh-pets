@@ -28,6 +28,7 @@ import re
 import socket
 import socketserver
 import signal
+import shlex
 import subprocess
 import time
 import sys
@@ -893,8 +894,45 @@ def kill_pid(pid):
         pass
 
 
-def release_port(port, marker, wait=8.0):
-    """端口若被本工具的旧 serve.py 占着，就结束它并等端口释放。
+def command_runs_this_script(command):
+    """只认 Python 的绝对脚本参数；不猜测另一个进程的工作目录。"""
+    try:
+        args = shlex.split(command, posix=os.name != "nt")
+    except ValueError:
+        return False
+    if os.name == "nt":
+        args = [arg[1:-1] if len(arg) >= 2 and arg[0] == arg[-1] == '"' else arg
+                for arg in args]
+    if not args:
+        return False
+    executable = os.path.basename(args[0]).lower()
+    if not re.fullmatch(r"(?:python(?:[23](?:\.\d+)*)?w?|py)(?:\.exe)?", executable):
+        return False
+    for arg in args[1:]:
+        if arg == "--":
+            break
+        if arg in ("-u", "-B", "-E", "-I", "-s", "-S", "-O", "-OO", "-q", "-v"):
+            continue
+        if executable in ("py", "py.exe") and re.fullmatch(r"-[23](?:\.\d+)*", arg):
+            continue
+        if arg.startswith("-"):
+            # -c / -m 以及无法确认的解释器选项都不能证明脚本身份。
+            return False
+        break
+    else:
+        return False
+    if arg == "--":
+        index = args.index("--") + 1
+        if index == len(args):
+            return False
+        arg = args[index]
+    if not os.path.isabs(arg) or (os.name == "nt" and not os.path.splitdrive(arg)[0]):
+        return False
+    return os.path.normcase(os.path.realpath(arg)) == os.path.normcase(os.path.realpath(__file__))
+
+
+def release_port(port, wait=8.0):
+    """端口若被本仓库同一路径的旧 serve.py 占着，就结束它并等端口释放。
 
     返回 (usable, note)：usable=False 表示端口被别人占着，调用方应换端口或退出。
     """
@@ -904,8 +942,8 @@ def release_port(port, marker, wait=8.0):
     if pid == os.getpid():
         return True, ""
     cmd = process_command_line(pid)
-    if marker not in cmd:
-        return False, ("端口 %d 被 PID %d 占用（不是本工具的 serve.py）：%s"
+    if not command_runs_this_script(cmd):
+        return False, ("端口 %d 被 PID %d 占用（无法确认为本仓库的 serve.py）：%s"
                        % (port, pid, cmd[:160] or "读取不到命令行"))
     kill_pid(pid)
     deadline = time.time() + wait
@@ -957,7 +995,7 @@ def main():
 
     port = args.port
     if port and not args.no_restart:
-        usable, note = release_port(port, "character-editor")
+        usable, note = release_port(port)
         if note:
             print(note)
         if not usable:

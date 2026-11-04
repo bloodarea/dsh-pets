@@ -8,6 +8,16 @@ DSH Pets brings your running AI agent sessions onto the desktop through animated
 
 > **Project status: early development.** This README describes the intended product and development milestones. Features listed as planned are **not** claims that they are already implemented. The project builds on ideas and code from [zuodazuoqiang001/dsh-pet](https://github.com/zuodazuoqiang001/dsh-pet), a Windows desktop-pet plugin for DSH.
 
+## Project responsibilities and character-pack delivery
+
+**DSH Pets is the desktop runtime project.** Its planned responsibility is to consume complete character packs, render their animation, play their pre-recorded voice lines, and connect them to DSH sessions and notifications. The current Host entry is a placeholder; character-pack loading and these desktop features are not implemented yet.
+
+Character production belongs to the separate sibling project [dsh-pets-character-studio](../dsh-pets-character-studio/). It owns illustration and parts preparation, rigging and animation, offline voice production, production skills and scripts, and pack assembly and validation.
+
+Both projects retain the full `tools/character-editor` editor. In DSH Pets it serves local editing, preview, and debugging of existing character packs; it is a development tool and is not included in the runtime npm package. Studio also carries the part annotator and the wider production workflow.
+
+The handoff from Studio to DSH Pets is a **complete character pack** following [CHARACTER-PACK.md](CHARACTER-PACK.md): a manifest, exported animation data with its atlas and textures, state-to-animation mappings, preview/static fallback, any declared voice index and every audio file it references, and license and attribution records. A deliberately silent pack may omit the voice index. Parts textures or an unfinished rig alone are intermediate production assets, not a complete runtime delivery. Source artwork, production workspaces, generation scripts, and production skills stay with Studio.
+
 ## What it does
 
 The product is organized around four focused modules:
@@ -60,7 +70,7 @@ Electron desktop companion (main process)
 
 ### Character assets
 
-Character packs are self-contained directories with a single contract file. The bundled default pack ships inside the package; every other pack is downloaded on demand into the user's data directory, which takes precedence over the bundled copy.
+Character packs are self-contained directories described by a manifest; the shared delivery contract is [CHARACTER-PACK.md](CHARACTER-PACK.md). The default pack is included in the package. On-demand downloads and user-directory overrides are planned: other packs will live in the user's data directory, which will take precedence over the bundled copy.
 
 ```text
 assets/characters/                 # bundled, read-only
@@ -68,6 +78,7 @@ assets/characters/                 # bundled, read-only
   deepseek/                        # the only pack shipped with the package
     manifest.json
     LICENSE
+    ATTRIBUTION.md
     preview.webp
     spine/                         # Spine skeleton, atlas and textures
     voice/
@@ -79,9 +90,9 @@ assets/characters/                 # bundled, read-only
 
 `manifest.json` is the contract, so the runtime never guesses file names. It declares the Spine entry plus scale and anchor, the agent-state → animation mapping (`idle`, `working`, `attention`, `done`, `failed`), the location of the voice index (`voice.index`), and a static-image fallback for machines without GPU acceleration. **The event set is defined by the voice index, not enumerated in the manifest**: the bundled pack currently ships 48 lines across 34 events, each line addressed as `voice/<event>/<id>.ogg`. A voice pack carries no version of its own — the pack's `version` in `manifest.json` covers art, animation and audio together. A pack may ship no voice index at all, and every event then stays silent.
 
-This layout is the **agreed target**: the bundled pack already ships its assets this way, but runtime voice playback is **not implemented yet**. Voice lines are recorded or generated **ahead of time** and shipped inside a character pack. **There is no runtime text-to-speech generation requirement**, no mandatory TTS API, and no need to send session text to a speech provider.
+This layout is the **agreed target**: the bundled pack contains assets in this structure, but their presence is not runtime acceptance. Character-pack loading, animation rendering, and voice playback are **not implemented yet**. Voice lines are recorded or generated **ahead of time** and shipped inside a character pack. **There is no runtime text-to-speech generation requirement**, no mandatory TTS API, and no need to send session text to a speech provider.
 
-Tools for producing illustrations, skeleton animation, or audio may be used **offline during asset creation**; they are not part of the DSH Pets runtime.
+Tools for producing illustrations, skeleton animation, or audio are used **offline in Studio**; DSH Pets receives the resulting complete character pack.
 
 ## Roadmap
 
@@ -113,19 +124,18 @@ The roadmap is indicative and may change as implementation and compatibility tes
 
 ### Current plugin shape (development)
 
-The repository is already installable as a Host-only Cordis bundle: `package.json` declares `dsh.bundle.patch`, `cordis.patch.yml` activates the entry, and `index.js` registers every bundled `skills/<name>/SKILL.md` as an agent skill. As a result the character-pipeline skill `three-view-parts` appears in the skill catalog without being copied into `.agents/skills`.
+The repository retains a Host-only Cordis bundle structure: `package.json` declares `dsh.bundle.patch`, `cordis.patch.yml` activates the entry, and `index.js` exports a no-op Host placeholder with no service dependencies. The package includes the default character assets; it does not register character-production skills.
 
 ```bash
 # Link this checkout into a profile (example: the web profile)
 dsh plugin --profile web add /path/to/dsh-pets
 
-# Restart Harness afterwards so the bundle is activated; the skill then appears
-# in the session skill catalog and can be loaded by name.
+# Restart Harness afterwards to activate the placeholder bundle.
 # Uninstall
 dsh plugin --profile web remove dsh-pets
 ```
 
-At this stage the bundle only registers skills. The pet window, session tracking, voice playback, and tray integration remain planned work; see the roadmap above.
+This development command installs the bundle structure only. A successful activation does not start a pet window or prove character-pack compatibility. Session tracking, notifications, animation rendering, voice playback, and tray integration remain planned work; see the roadmap above.
 
 ## Reliability, privacy, and resource usage
 

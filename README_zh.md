@@ -8,6 +8,16 @@ DSH Pets 通过动态角色、预录制语音和可操作的通知，将正在�
 
 > **项目状态：早期开发。** 本文介绍目标功能与开发计划；列为规划的功能**不代表已经实现**。项目计划参考并继承 [zuodazuoqiang001/dsh-pet](https://github.com/zuodazuoqiang001/dsh-pet) 的实现基础，该上游项目是面向 Windows 的 DSH 桌宠插件。
 
+## 项目职责与完整人物包交付
+
+**DSH Pets 是桌宠运行项目。** 计划职责是消费完整人物包、渲染动画、播放预录制语音，并接入 DSH 会话与通知。当前 Host 入口仅为占位，人物包加载及这些桌宠能力尚未实现。
+
+人物制作由独立的同级项目 [dsh-pets-character-studio](../dsh-pets-character-studio/) 负责，包括立绘与部件准备、绑定和动画、离线配音、制作技能与脚本，以及人物包组装与校验。
+
+两个项目均保留 `tools/character-editor` 的完整编辑功能。本仓用它在本地编辑、预览和调试已有的人物包；该开发工具不随运行时 npm 包分发。Studio 另外保留部件标注器与完整制作流程。
+
+Studio 向 DSH Pets 交付的是遵循 [CHARACTER-PACK.md](CHARACTER-PACK.md) 的**完整人物包**：manifest、导出的动画数据及配套图集和贴图、状态到动画的映射、预览图与静态降级资源、声明的语音索引及其引用的全部音频，以及许可证和来源署名记录。明确静音的人物包可以省略语音索引。只有部件贴图或未完成的骨架属于制作中间产物，不构成完整的运行交付；源画、制作工作区、生成脚本与制作技能归 Studio 管理。
+
 ## 核心功能
 
 产品围绕四个模块设计：
@@ -60,7 +70,7 @@ Electron 桌面客户端（主进程）
 
 ### 角色资产
 
-每个角色是一个自包含目录，只有一个契约文件。默认角色随安装包发布；其余角色按需下载到用户数据目录，同名时用户目录优先于内置副本。
+每个角色是一个由 manifest 描述的自包含目录，共同交付规范见 [CHARACTER-PACK.md](CHARACTER-PACK.md)。默认角色随安装包发布。按需下载与用户目录覆盖仍是规划能力：其余角色将下载到用户数据目录，同名时用户目录优先于内置副本。
 
 ```text
 assets/characters/                 # 内置，只读
@@ -68,6 +78,7 @@ assets/characters/                 # 内置，只读
   deepseek/                        # 唯一随包发布的角色
     manifest.json
     LICENSE
+    ATTRIBUTION.md
     preview.webp
     spine/                         # Spine 骨骼、图集与贴图
     voice/
@@ -79,9 +90,9 @@ assets/characters/                 # 内置，只读
 
 `manifest.json` 是唯一契约，运行时**不靠约定文件名**猜资源。它声明 Spine 入口与缩放、锚点，Agent 状态到动画的映射（`idle`、`working`、`attention`、`done`、`failed`），语音索引的位置（`voice.index`），以及无 GPU 加速时使用的静态图降级。**事件集合由语音索引定义，不在 manifest 里枚举**：内置包当前 48 条台词 / 34 个事件，每条台词的地址是 `voice/<event>/<id>.ogg`。语音包不自带版本号，角色版本统一由 manifest 的 `version` 表达（美术、动画、音频一起走）；完全没有语音索引的包，所有事件保持静音。
 
-以上是**已确定的目标结构**：内置包的素材已按此布局落盘，但运行时语音播放尚未实现。语音由开发者**提前录制或生成**，随角色资源包发布。运行过程中**不要求实时 TTS 推理**，无需强制接入语音 API，也无需将会话正文发送给语音服务。
+以上是**已确定的目标结构**：内置包包含按此布局存放的素材，但素材存在不代表运行验收已通过。人物包加载、动画渲染与语音播放均尚未实现。语音由开发者**提前录制或生成**，随角色资源包发布。运行过程中**不要求实时 TTS 推理**，无需强制接入语音 API，也无需将会话正文发送给语音服务。
 
-角色立绘、骨骼动画和配音可以在开发阶段利用第三方工具离线制作；这些资产生产工具不随 DSH Pets 运行时一起安装。
+角色立绘、骨骼动画和配音在 Studio 中利用工具离线制作；DSH Pets 接收制作完成的完整人物包。
 
 ## 开发路线图
 
@@ -113,18 +124,18 @@ assets/characters/                 # 内置，只读
 
 ### 当前插件形态（开发中）
 
-本仓已经可以按 Host-only Cordis bundle 安装：`package.json` 声明 `dsh.bundle.patch`，`cordis.patch.yml` 激活入口，`index.js` 把随包分发的 `skills/<name>/SKILL.md` 注册成 Agent 技能。因此角色制作技能 `three-view-parts` 会直接出现在技能目录里，不需要再拷进 `.agents/skills`。
+本仓保留 Host-only Cordis bundle 结构：`package.json` 声明 `dsh.bundle.patch`，`cordis.patch.yml` 激活入口，`index.js` 导出无服务依赖、无操作的 Host 占位入口。安装包包含默认人物素材，不注册人物制作技能。
 
 ```bash
 # 把当前 checkout 链接进 profile（以 web 为例）
 dsh plugin --profile web add /path/to/dsh-pets
 
-# 安装后重启 Harness 激活 bundle；技能会出现在会话技能目录里，可直接按名字加载
+# 安装后重启 Harness 激活占位 bundle
 # 卸载
 dsh plugin --profile web remove dsh-pets
 ```
 
-当前阶段插件只负责注册技能；桌宠窗口、会话跟踪、语音播放与系统托盘仍按上面的路线图推进。
+此开发命令只安装 bundle 结构。激活成功不会启动桌宠窗口，也不代表人物包兼容性已通过验收。会话跟踪、通知、动画渲染、语音播放与系统托盘仍按上面的路线图推进。
 
 ## 可靠性、隐私与资源占用
 

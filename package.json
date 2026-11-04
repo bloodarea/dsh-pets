@@ -21,7 +21,11 @@
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",
-    "skills"
+    "assets/characters/deepseek",
+    "assets/characters/index.json",
+    "CHARACTER-PACK.md",
+    "README_zh.md",
+    "CONTRIBUTING.md"
   ],
   "keywords": [
     "dsh",

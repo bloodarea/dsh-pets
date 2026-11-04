@@ -1,5 +1,7 @@
 # 内置人物包管理器（零依赖，本地用）
 
+此工具在 DSH Pets 与 DSH Pets Character Studio 两个项目均保留完整副本。桌宠仓库用于已有包的编辑、预览与调试；完整制作流程见 [Character Studio](https://github.com/bloodarea/dsh-pets-character-studio)。工具从当前仓库读取资产，不直接写入另一仓库。导出的 ZIP 只包含 Spine 子包；完整人物包交付见根目录 [CHARACTER-PACK.md](../../CHARACTER-PACK.md)。
+
 一个不用装任何依赖的网页小工具，用来**手动微调角色部件的摆放（位置 / 旋转 / 缩放）与绘制顺序**，
 并能在同一页里**预览动画、看骨骼与 IK、看网格与权重**。载入一个 `index.json` 就能看整包；
 调好后可以**就地保存回索引目录**，或**另存一个 zip 整包**。产出与 spine-pack 流程兼容。
@@ -18,7 +20,7 @@
 
 **端口被占用时**：
 
-- 占着的是**本工具自己的旧实例**（`character-editor/serve.py`）→ 先结束它，再接管同一个端口，不用手动找进程；
+- 占着的是**当前仓库同一路径的旧实例**（命令行能确认绝对 `character-editor/serve.py` 路径）→ 先结束它，再接管同一个端口；另一个仓库或相对命令无法确认身份时只换端口；
 - 占着的是**别的程序** → 不杀它，打印占用者（PID + 命令行）并改用下一个空闲端口；
   想让它直接报错就用 `--strict-port`；
 - `--no-restart`：不结束旧实例，直接换空闲端口。
@@ -26,7 +28,7 @@
 等价的手工方式（**只读**：能载入与另存 ZIP，保存文件置灰；就地保存需要 `start.sh` 起的 `serve.py`）：
 
 ```bash
-cd <仓库根目录>                                  # 必须是 dsh-pets 仓库根
+cd <仓库根目录>                 # dsh-pets 或 dsh-pets-character-studio
 python3 -m http.server 8123 --bind 127.0.0.1
 # 浏览器打开 http://127.0.0.1:8123/tools/character-editor/
 ```
@@ -105,12 +107,12 @@ python3 tools/character-editor/serve.py --port 8123 --no-browser
 # 1) 解压 / 覆盖（另存 ZIP 解压到原仓库对应目录即可继续用；换位置要改索引里的 base）
 unzip ~/Downloads/spine-bundle.zip -d assets/characters/deepseek/spine
 
-# 2) 重新打包图集（几何变了必须重打）
-cd references/ref-sprite/game-asset-aesthetic-test/extensions/skills/game-asset-spine-cutout/assets/workspace
-python scripts/spine-pack.py ../../../../../../dsh-pets/assets/characters/deepseek/spine --name model
+# 2) 若需要重打图集，在 Studio 使用已准备并核实许可的外部工具。
+# SPINE_PACK_SCRIPT 和 SPINE_VERIFY_SCRIPT 均由使用者配置，不依赖作者本机参考路径。
+python3 "${SPINE_PACK_SCRIPT:?请配置图集打包脚本}" assets/characters/deepseek/spine --name model
 
-# 3) 官方运行时校验
-cd /tmp/spine-verify && node spine-verify.mjs /path/to/assets/characters/deepseek/spine model
+# 3) 使用已安装对应 Spine runtime 的验证工具
+node "${SPINE_VERIFY_SCRIPT:?请配置运行时验证脚本}" assets/characters/deepseek/spine model
 ```
 
 > 导出的是**运行时 JSON**，不是 Spine 工程文件：不能还原 `.spine` 源工程，也不做二进制 `.skel` 导出。
@@ -306,8 +308,8 @@ http://127.0.0.1:8123/tools/character-editor/selftest.html
 `voice.js` 的索引校验 / 事件分组 / summarize / 资源评估 / 路径与自动探测），
 结果在 `window.__selftestResult`（`failed === 0` 为通过）。回归截图放在 `output/review/`（gitignore）。
 
-`selftest.html` 与 `index.html` 都按 `icons.js → spine-core.js → bundle.js → voice.js → fixtures/cases.js → app.js` 的顺序加载；
-`bundle.js` / `voice.js` 无 DOM / fetch，Node 里也能直接 require。
+应用页在 core / bundle / voice / fixtures 就绪后加载 `app.js`；自测页加载相同的数据模块后运行 `selftest.js`。
+`bundle.js` / `voice.js` 无 DOM / fetch。在仓库根运行 `node tools/character-editor/selftest-node.mjs` 可用 Node.js 执行相同数据自测。
 
 ## 图标集
 

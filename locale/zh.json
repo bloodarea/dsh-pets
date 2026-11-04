@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "DSH 桌宠",
-    "description": "DeepSeek Harness 的桌面宠物插件（开发中）。注册随包内置的角色制作技能，例如 three-view-parts。"
+    "description": "DeepSeek Harness 的桌宠运行项目（早期开发）。当前仅为 Host 占位入口，桌宠功能与人物包加载仍在规划中。"
   }
 }
