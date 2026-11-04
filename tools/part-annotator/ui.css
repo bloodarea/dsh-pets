@@ -257,3 +257,59 @@ main { flex: 1 1 auto; display: flex; min-height: 0; }
 .ctxmenu button:disabled { opacity: .4; cursor: not-allowed; }
 .ctxmenu button kbd { margin-left: auto; }
 .ctxmenu .sep { height: 1px; margin: 4px 0; background: var(--line); }
+
+/* 默认只呈现记录问题的流程；原有部件编辑集中在“高级编辑”。 */
+body.simple .advanced-only,
+body.simple .toolgrp:has(#modeParts),
+body.simple label:has(#autoAssign),
+body.simple label:has(#showOutline),
+body.simple label:has(#showBase), body.simple label:has(#showIssuesChk),
+body.simple .bar-tools > .vsep,
+body.simple [data-cmd='assign'], body.simple [data-cmd='subtract'],
+body.simple [data-cmd='new-from-selection'],
+body.simple [data-cmd='toggle-outline'], body.simple [data-cmd='toggle-base'],
+body.simple [data-cmd='open-project'], body.simple [data-cmd='selftest'],
+body.simple #selectionBar, body.simple #btnPanelClose, body.simple #btnPanel { display: none !important; }
+body:not(.simple) .simple-only { display: none !important; }
+body.simple .part-row .zbtn { display: none; }
+body.simple .bar-tools kbd,
+body.simple #btnOpenBundle span,
+body.simple #btnUndo span,
+body.simple #btnFit span { display: none; }
+body.simple .app-title { position: static; transform: none; margin-right: auto; }
+body.simple .menubar .spacer { flex: 0; }
+body.simple #inspector { --inspector-w: 350px; }
+body.simple .bar-tools { padding: 8px 12px; gap: 8px; }
+body.simple .bar-tools .toolgrp { gap: 5px; }
+body.simple .btn.tool { border-color: var(--line); }
+body.simple .pick:has(#tolerance) { margin-left: 2px; }
+body.simple #btnAdvanced { color: var(--dim); font-size: 12px; }
+body.simple .inspector-head { padding: 6px 12px; }
+body.simple .pane-block { padding: 14px 16px; }
+body.simple .issue-heading .block-head { margin-bottom: 10px; }
+#issueEditor { border: 0; padding: 0; margin: 0; min-width: 0; }
+#issueEditor:disabled { opacity: .48; }
+.wide { width: 100%; }
+select.wide, #issueNote { color: var(--fg); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 8px; font: inherit; }
+#issueNote { display: block; width: 100%; resize: vertical; min-height: 80px; margin-bottom: 12px; }
+.step-field { display: flex; align-items: center; gap: 8px; font-weight: 600; margin-bottom: 10px; }
+.step-number { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; color: var(--accent); background: var(--selected); font-size: 12px; }
+.part-preview-toggle { margin-top: 8px; padding-left: 0; }
+#issueStepHint { margin-top: 8px; }
+.area-state { color: var(--ok); font-size: 12px; margin-top: 6px; }
+.optional-fields summary { cursor: pointer; color: var(--dim); }
+.optional-fields[open] summary { margin-bottom: 12px; }
+.optional-fields .fields { margin-top: 12px; }
+body.simple .issue-row { height: auto; min-height: 36px; }
+body.simple .issue-row .pname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 960px) {
+  body.simple .inspector { position: static; transform: none; box-shadow: none; width: 310px; flex-basis: 310px; }
+  body.simple .bar-tools kbd, body.simple .zoomgrp { display: none; }
+  body.simple #btnPanel { display: none; }
+}
+@media (max-width: 640px) {
+  body.simple main { flex-direction: column; overflow: auto; }
+  body.simple .stage { flex: 1 0 42vh; }
+  body.simple .inspector { width: 100%; flex: 1 0 50vh; border-left: 0; border-top: 1px solid var(--line); }
+  body.simple .app-title { display: none; }
+}

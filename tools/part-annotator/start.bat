@@ -19,6 +19,10 @@ if not defined PY (
   exit /b 1
 )
 
+rem Port busy? This ends this tool's own old serve.py on that port and reuses
+rem it. Foreign programs are never killed: it falls back to the next free port.
+rem   --strict-port  fail instead of hopping
+rem   --no-restart   never end the old instance
 %PY% "%~dp0serve.py" %*
 if errorlevel 1 (
   echo.

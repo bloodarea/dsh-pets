@@ -34,6 +34,9 @@ import pathlib
 import re
 import socket
 import socketserver
+import signal
+import subprocess
+import time
 import sys
 import tempfile
 import threading
@@ -452,6 +455,27 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if close:
             self.close_connection = True
 
+    # 静态文件（app.js / ui.css / index.html …）也强制不缓存：
+    # 改完代码刷新就能看到，不会被浏览器按 Last-Modified 猜一个新鲜期缓存住。
+    def send_head(self):
+        if "If-Modified-Since" in self.headers:
+            del self.headers["If-Modified-Since"]
+        if "If-None-Match" in self.headers:
+            del self.headers["If-None-Match"]
+        orig_end_headers = self.end_headers
+
+        def end_headers_no_cache():
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
+            orig_end_headers()
+
+        self.end_headers = end_headers_no_cache
+        try:
+            return super().send_head()
+        finally:
+            self.end_headers = orig_end_headers
+
     def fail(self, err: ApiError):
         self.send_json(err.status, err.payload(), err.close)
 
@@ -594,20 +618,109 @@ def is_loopback_bind(bind):
     return bind in ("127.0.0.1", "localhost", "::1")
 
 
+# ---------------------------------------------------------------- 端口占用处理
+def port_owner_pid(port):
+    """返回监听该端口的 PID；查不到返回 None。"""
+    if os.name == "nt":
+        try:
+            out = subprocess.run(["netstat", "-ano", "-p", "tcp"],
+                                 capture_output=True, text=True, timeout=10).stdout
+        except Exception:  # noqa: BLE001
+            return None
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) >= 5 and parts[0].upper() == "TCP" and parts[3].upper() == "LISTENING":
+                if parts[1].rsplit(":", 1)[-1] == str(port):
+                    try:
+                        return int(parts[4])
+                    except ValueError:
+                        continue
+        return None
+    for cmd in (["lsof", "-ti", "tcp:%d" % port, "-sTCP:LISTEN"], ["fuser", "%d/tcp" % port]):
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=10).stdout
+        except Exception:  # noqa: BLE001
+            continue
+        for tok in out.split():
+            if tok.isdigit():
+                return int(tok)
+    return None
+
+
+def process_command_line(pid):
+    if os.name == "nt":
+        try:
+            out = subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 "(Get-CimInstance Win32_Process -Filter \"ProcessId=%d\").CommandLine" % pid],
+                capture_output=True, text=True, timeout=20).stdout
+            return out.strip()
+        except Exception:  # noqa: BLE001
+            return ""
+    try:
+        return subprocess.run(["ps", "-p", str(pid), "-o", "args="],
+                              capture_output=True, text=True, timeout=10).stdout.strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def kill_pid(pid):
+    if os.name == "nt":
+        try:
+            subprocess.run(["taskkill", "/PID", str(pid), "/F"],
+                           capture_output=True, timeout=20)
+        except Exception:  # noqa: BLE001
+            pass
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        pass
+
+
+def release_port(port, marker, wait=8.0):
+    """端口若被本工具的旧 serve.py 占着，就结束它并等端口释放。
+
+    返回 (usable, note)：usable=False 表示端口被别人占着，调用方应换端口或退出。
+    """
+    pid = port_owner_pid(port)
+    if pid is None:
+        return True, ""
+    if pid == os.getpid():
+        return True, ""
+    cmd = process_command_line(pid)
+    if marker not in cmd:
+        return False, ("端口 %d 被 PID %d 占用（不是本工具的 serve.py）：%s"
+                       % (port, pid, cmd[:160] or "读取不到命令行"))
+    kill_pid(pid)
+    deadline = time.time() + wait
+    while time.time() < deadline:
+        if port_owner_pid(port) is None:
+            return True, "已结束占用端口 %d 的旧实例（PID %d）" % (port, pid)
+        time.sleep(0.15)
+    return False, "旧实例（PID %d）在 %.0f 秒内没有退出，请手动结束后再启动" % (pid, wait)
+
+
+def port_is_free(port):
+    """端口没被监听才算空闲（Windows 的 SO_REUSEADDR 会让 bind 探测误判）。"""
+    return port_owner_pid(port) is None
+
+
 def free_port(preferred, tries=40):
-    for port in range(preferred, preferred + tries):
+    if preferred == 0:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            try:
-                sock.bind(("127.0.0.1", port))
-                return port
-            except OSError:
-                continue
+            sock.bind(("127.0.0.1", 0))
+            return sock.getsockname()[1]
+    for port in range(preferred, preferred + tries):
+        if port_is_free(port):
+            return port
     return 0
 
 
 class ThreadingServer(socketserver.ThreadingTCPServer):
-    allow_reuse_address = True
+    # Windows 的 SO_REUSEADDR 允许“重复绑定”同一端口，两个实例会同时以为自己是服务，
+    # 于是出现“旧进程没杀掉也能起第二份”。这里在 Windows 上禁止复用，占用就直接失败。
+    allow_reuse_address = os.name != "nt"
     daemon_threads = True
     request_queue_size = 32
 
@@ -617,18 +730,29 @@ def main():
     parser.add_argument("--port", type=int, default=8123)
     parser.add_argument("--bind", default="127.0.0.1")
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument("--no-restart", action="store_true", help="不要结束占用端口的旧实例，改用其它端口")
+    parser.add_argument("--strict-port", action="store_true", help="端口被其它程序占用时直接退出，不换端口")
     args = parser.parse_args()
 
     port = args.port
+    if port and not args.no_restart:
+        usable, note = release_port(port, "part-annotator")
+        if note:
+            print(note)
+        if not usable:
+            if args.strict_port:
+                print("已停止：端口 %d 被其它程序占用（换端口用 --port 9000，或先结束它）" % port)
+                return 2
+            print("改用一个空闲端口继续启动")
     if port == 0:
-        port = 0
-    elif args.port == 8123:
-        port = free_port(8123)
-    else:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            sock.bind(("127.0.0.1", port))
-        port = args.port
+        port = free_port(0)
+    elif not port_is_free(port):
+        fallback = free_port(port)
+        if not fallback:
+            print("端口 %d 及其后 40 个端口都被占用，请用 --port 指定" % port, file=sys.stderr)
+            return 2
+        print("端口 %d 仍被占用，改用 %d" % (port, fallback))
+        port = fallback
 
     server = ThreadingServer((args.bind, port), functools.partial(Handler))
     url = "http://127.0.0.1:%d%s" % (server.server_address[1], TOOL_PATH)
@@ -650,4 +774,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

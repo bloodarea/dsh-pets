@@ -9,6 +9,8 @@
 (function () {
   'use strict';
 
+  var BUILD = '2026-11-04.2';
+
   var C = window.PartAnnotatorCore;
   var $ = function (sel, root) { return (root || document).querySelector(sel); };
   var $$ = function (sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); };
@@ -21,7 +23,24 @@
     basePixels: null,        // Uint8ClampedArray（洪水填充用）
     maps: { visible: null, hidden: null },
     channel: 'visible',
-    mode: 'parts',            // parts = 语义部件标注；issues = 拆分问题标注
+    advanced: false,
+    layout: 'single',          // single | dual | quad
+    quadSelect: 'front',       // 四视图里被选中的立绘（部件叠加跟着它切换）
+    hoverScreen: null,         // 指针在画布上的坐标（放大镜用）
+    hoverPane: null,
+    loupe: false,              // 按住 Alt 显示放大镜
+    panes: [],
+    paneOrigin: { x: 0, y: 0 },
+    baseMode: 'stack',         // stack = 完整部件层叠（默认，能看见被遮挡的部分）；art = 纯原立绘
+    stackCanvas: null,
+    stackDirty: true,
+    layerImages: {},           // id -> { img, ok }
+    artImages: {},             // view -> Image | false
+    mode: 'issues',           // 默认只记录问题；部件编辑需开启高级编辑
+    usedIssueIds: {},
+    onlyIssuePart: false,
+    partPreview: null,
+    partPreviewKey: '',
     parts: [],
     activeId: null,
     nextZ: 1,
@@ -71,7 +90,8 @@
   }
   function setDirty(v) {
     S.dirty = v;
-    document.title = (v ? '● ' : '') + '立绘语义标注器';
+    document.title = (v ? '● ' : '') + '立绘问题标注';
+    $('#btnSave').classList.toggle('unsaved', !!v);
   }
   function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
   function nowIso() { return new Date().toISOString(); }
@@ -82,6 +102,14 @@
   function activePart() {
     var idx = partIndex(S.activeId);
     return idx ? S.parts[idx - 1] : null;
+  }
+  function partLabel(p) {
+    if (!p) return '整张立绘';
+    if (S.advanced || p.name !== p.id) return p.name;
+    var names = { 'hair-front': '前发', 'hair-back': '后发', hairband: '发带', tail: '尾巴', neck: '脖子', skirt: '裙子', topwear: '上衣', 'head-face': '头和脸', nose: '鼻子', mouth: '嘴巴', 'fin-ear': '耳鳍', shoe: '鞋子', arm: '手臂', eyewhite: '眼白', iris: '瞳孔', eyebrow: '眉毛', eyelash: '睫毛' };
+    if (names[p.id]) return names[p.id];
+    var m = /^(.*)-(l|r)$/.exec(p.id);
+    return m && names[m[1]] ? (m[2] === 'l' ? '左' : '右') + names[m[1]] : p.name;
   }
   function channelMap(ch) { return S.maps[ch || S.channel]; }
   function scheduleRender() {
@@ -96,6 +124,103 @@
     return t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA');
   }
 
+  function cancelPendingSelection() {
+    S.selection = null;
+    // 已落下的画笔先结束，以保留这一步的撤销记录；未闭合框选直接取消。
+    if (S.drag && S.drag.stroke) endStroke({});
+    S.drag = null;
+    updateSelectionBar();
+    closeContextMenu();
+    scheduleRender();
+  }
+  function stopDrawing(commit) {
+    if (commit !== false && S.mode === 'issues' && S.issueTarget !== 'before' && currentSelectionBbox()) applyIssueSelection();
+    cancelPendingSelection();
+    setTool('select');
+    msg('已停止圈选，可继续写说明或保存');
+  }
+  function setAdvanced(enabled) {
+    cancelPendingSelection();
+    S.advanced = !!enabled;
+    document.body.classList.toggle('simple', !S.advanced);
+    $('#btnAdvanced').textContent = S.advanced ? '返回问题标注' : '高级编辑';
+    $('#btnAdvanced').setAttribute('aria-pressed', S.advanced ? 'true' : 'false');
+    if (!S.advanced) { S.issueTarget = 'region'; S.onlyIssuePart = false; $('#onlyIssuePart').checked = false; }
+    setMode(S.advanced ? 'parts' : 'issues');
+    setTool('select');
+    S.issueOverlayDirty = true;
+    S.visibilityDirty = true;
+    renderParts();
+    updateIssueGuide();
+    layoutCanvas();
+  }
+  function updateIssueGuide() {
+    var it = activeIssue();
+    $('#issueEditor').disabled = !it;
+    $('#btnDeleteIssue').disabled = !it;
+    $('#btnAddIssue').disabled = !S.img || !S.parts.length;
+    $('#onlyIssuePart').disabled = !it || !partById(it.partId);
+    if ($('#onlyIssuePart').disabled) { S.onlyIssuePart = false; $('#onlyIssuePart').checked = false; }
+    var previewing = !S.advanced && S.onlyIssuePart && !!S.partPreview;
+    $('#showMask').disabled = previewing;
+    $('#showMask').parentNode.title = previewing ? '「只看这个部件」时不叠加部件颜色' : '按部件给画面上色';
+    var toolHints = {
+      select: '已停止圈选，拖动画面可移动视图。',
+      rect: '拖出矩形框，可连续标多处。',
+      poly: '逐点点击，双击或 Enter 完成一个框。',
+      wand: '点击相近颜色的区域，可调节容差。',
+      brush: '用画笔涂出需要标记的地方。',
+      eraser: '只擦掉当前标记，原图不会被擦掉。'
+    };
+    var target = S.issueTarget === 'after' ? '期望范围' : '问题位置';
+    $('#issueStepHint').textContent = !it ? '先点「添加问题」。' : (S.tool === 'select' ? toolHints.select : '正在标记' + target + '。' + (toolHints[S.tool] || ''));
+    var n = it ? maskCount(it.masks.region) : 0;
+    var rb = it ? issueBlocks(it).region : 0;
+    $('#issueRegionState').textContent = n ? ('✓ 已圈出问题位置' + (rb > 1 ? '（' + rb + ' 块）' : '')) : '还没圈选问题位置';
+    var info = [];
+    if (S.selection) {
+      var pend = currentSelectionBbox();
+      if (pend) info.push('当前选区 ' + pend.x0 + ',' + pend.y0 + ' · ' + (pend.x1 - pend.x0) + '×' + (pend.y1 - pend.y0));
+    }
+    if (it) {
+      var bb = C.bboxOfValue(it.masks.region, S.imgW, S.imgH, 1);
+      if (bb) info.push('已标记 ' + bb.x0 + ',' + bb.y0 + ' · ' + (bb.x1 - bb.x0) + '×' + (bb.y1 - bb.y0) + '（' + n.toLocaleString() + ' px）');
+    }
+    var infoEl = $('#issueSelInfo');
+    if (infoEl) infoEl.textContent = info.join(' ｜ ') || '（选区会显示 x,y 和宽×高）';
+    $('#issueAfterState').textContent = it && maskCount(it.masks.after) ? '✓ 已补充期望范围，可继续修改。' : '不确定怎么圈，写在说明里也可以。';
+    $('#targetRegion').setAttribute('aria-pressed', S.issueTarget === 'region' && S.tool !== 'select' ? 'true' : 'false');
+    $('#targetAfter').setAttribute('aria-pressed', S.issueTarget === 'after' && S.tool !== 'select' ? 'true' : 'false');
+    $('#btnStopDrawing').disabled = !it || S.tool === 'select';
+    $('label:has(#brushSize)').hidden = !S.advanced && S.tool !== 'brush' && S.tool !== 'eraser';
+    $('label:has(#tolerance)').hidden = S.tool !== 'wand';
+    refreshPartPreview();
+  }
+  function refreshPartPreview() {
+    var it = activeIssue(), p = it && partById(it.partId);
+    var src = p && S.layerSources && S.layerSources[p.id];
+    var key = S.onlyIssuePart && p ? (src || p.id) : '';
+    if (key === S.partPreviewKey) return;
+    S.partPreviewKey = key; S.partPreview = null; S.partPreviewPixels = null;
+    function setPreview(img) {
+      var canvas = document.createElement('canvas');
+      canvas.width = S.imgW; canvas.height = S.imgH;
+      var c = canvas.getContext('2d'); c.drawImage(img, 0, 0);
+      S.partPreviewPixels = c.getImageData(0, 0, S.imgW, S.imgH).data;
+      S.partPreview = img;
+      scheduleRender();
+    }
+    if (!key) { scheduleRender(); return; }
+    if (!src) {
+      setPreview(makeCutCanvas(S.maps.visible, partIndex(p.id)));
+      return;
+    }
+    var img = new Image();
+    img.onload = function () { if (S.partPreviewKey === key) setPreview(img); };
+    img.onerror = function () { if (S.partPreviewKey === key) { msg('这个部件的图片暂时无法显示，请查看整张立绘'); S.onlyIssuePart = false; $('#onlyIssuePart').checked = false; S.partPreviewKey = ''; scheduleRender(); } };
+    img.src = repoUrl(src);
+  }
+
   // ---------------------------------------------------------------- 画布 / 视图
   function layoutCanvas() {
     dpr = Math.min(2, window.devicePixelRatio || 1);
@@ -106,6 +231,7 @@
     cv.style.width = w + 'px';
     cv.style.height = h + 'px';
     buildChecker();
+    syncPaneOrigin();
     scheduleRender();
   }
 
@@ -123,11 +249,11 @@
 
   function fitView() {
     if (!S.img) return;
-    var w = stage.clientWidth, h = stage.clientHeight;
-    var z = Math.min((w - 32) / S.imgW, (h - 32) / S.imgH);
+    var e = editPane();
+    var z = Math.min((e.w - 32) / S.imgW, (e.h - 32) / S.imgH);
     S.zoom = clamp(z, 0.02, 8);
-    S.tx = (w - S.imgW * S.zoom) / 2;
-    S.ty = (h - S.imgH * S.zoom) / 2;
+    S.tx = (e.w - S.imgW * S.zoom) / 2;
+    S.ty = (e.h - S.imgH * S.zoom) / 2;
     updateZoomLabel();
     scheduleRender();
   }
@@ -138,6 +264,36 @@
 
   function screenToImage(px, py) {
     return { x: (px - S.tx) / S.zoom, y: (py - S.ty) / S.zoom };
+  }
+  // 取整到像素：加一点点余量，避免浮点误差把整坐标算成 x.999999 落到相邻像素
+  function pixelAt(v) { return Math.floor(v + 1e-6); }
+  // 指针位置 → 编辑窗格内的本地坐标（画布坐标减去窗格原点）
+  function cursorPos(ev) {
+    var rect = cv.getBoundingClientRect();
+    return { x: ev.clientX - rect.left - S.paneOrigin.x, y: ev.clientY - rect.top - S.paneOrigin.y };
+  }
+  // 指针落在哪一格，就按那一格的变换换成图像坐标（双视图左=原图、右=叠加图，两格都能画）
+  function imagePointFor(ev) {
+    var rect = cv.getBoundingClientRect();
+    var x = ev.clientX - rect.left, y = ev.clientY - rect.top;
+    var p = paneAt(x, y) || editPane();
+    if (p.kind === 'edit') return { x: (x - p.x - S.tx) / S.zoom, y: (y - p.y - S.ty) / S.zoom };
+    var r = paneRect(p, S.imgW, S.imgH);
+    if (!r || !r.s) return { x: 0, y: 0 };
+    return { x: (x - p.x - r.x) / r.s, y: (y - p.y - r.y) / r.s };
+  }
+  function canDrawAt(ev) {
+    var rect = cv.getBoundingClientRect();
+    var p = paneAt(ev.clientX - rect.left, ev.clientY - rect.top);
+    if (!p) return false;
+    if (p.kind === 'edit') return true;
+    return p.kind === 'composite' && S.quadSelect === S.view;
+  }
+  function inEditPane(ev) {
+    var rect = cv.getBoundingClientRect();
+    var x = ev.clientX - rect.left, y = ev.clientY - rect.top;
+    var e = editPane();
+    return x >= e.x && y >= e.y && x <= e.x + e.w && y <= e.y + e.h;
   }
   function imageToScreen(ix, iy) {
     return { x: S.tx + ix * S.zoom, y: S.ty + iy * S.zoom };
@@ -188,25 +344,49 @@
     S.outlineDirty = false;
     S.outlineCanvas = null;
     var idx = partIndex(S.activeId);
-    if (!idx || !S.showOutline || !S.showMask) return;
+    if (!idx || !S.showOutline) return;
     if (S.parts[idx - 1] && S.parts[idx - 1].visible === false) return;
     var map = channelMap();
     var w = S.imgW, h = S.imgH;
-    var out = document.createElement('canvas');
-    out.width = w; out.height = h;
-    var c = out.getContext('2d');
-    var data = c.createImageData(w, h);
-    var col = C.hexToRgb(S.parts[idx - 1].color);
-    var buf = data.data;
+    var col = C.hexToRgb(S.parts[idx - 1].color || '#ff6b6b');
+    // 先标记选中件的边界像素，再在边界外侧补一圈深色，任何底色上都看得清
+    var edge = new Uint8Array(w * h);
     for (var y = 0; y < h; y++) {
       for (var x = 0; x < w; x++) {
         var p = y * w + x;
         if (map[p] !== idx) continue;
-        var edge = (x === 0 || map[p - 1] !== idx) || (x === w - 1 || map[p + 1] !== idx) ||
-                   (y === 0 || map[p - w] !== idx) || (y === h - 1 || map[p + w] !== idx);
-        if (!edge) continue;
-        var o = p * 4;
-        buf[o] = 255; buf[o + 1] = 255; buf[o + 2] = 255; buf[o + 3] = 235;
+        if ((x === 0 || map[p - 1] !== idx) || (x === w - 1 || map[p + 1] !== idx) ||
+            (y === 0 || map[p - w] !== idx) || (y === h - 1 || map[p + w] !== idx)) {
+          edge[p] = 1;
+        }
+      }
+    }
+    var out = document.createElement('canvas');
+    out.width = w; out.height = h;
+    var c = out.getContext('2d');
+    var data = c.createImageData(w, h);
+    var buf = data.data;
+    for (var y2 = 0; y2 < h; y2++) {
+      for (var x2 = 0; x2 < w; x2++) {
+        var q = y2 * w + x2;
+        var o = q * 4;
+        if (edge[q]) {
+          buf[o] = 255; buf[o + 1] = 255; buf[o + 2] = 255; buf[o + 3] = 240;
+          continue;
+        }
+        var nearEdge = (x2 > 0 && edge[q - 1]) || (x2 < w - 1 && edge[q + 1]) ||
+                       (y2 > 0 && edge[q - w]) || (y2 < h - 1 && edge[q + w]);
+        if (nearEdge) {
+          if (map[q] === idx) {
+            // 往部件内部再加一圈白，缩小时也看得见
+            buf[o] = 255; buf[o + 1] = 255; buf[o + 2] = 255; buf[o + 3] = 200;
+          } else {
+            buf[o] = 13; buf[o + 1] = 16; buf[o + 2] = 23; buf[o + 3] = 170;
+          }
+        } else if (map[q] === idx && !S.showMask) {
+          // 没开“部件颜色”时，选中件按自身配色铺一层，强度对齐颜色块，一眼可辨
+          buf[o] = col.r; buf[o + 1] = col.g; buf[o + 2] = col.b; buf[o + 3] = 150;
+        }
       }
     }
     c.putImageData(data, 0, 0);
@@ -244,36 +424,364 @@
     S.visibilityCanvas = cvs;
   }
 
+  // ---------------------------------------------------------------- 视图布局（单 / 双 / 四视图）
+  function viewArtUrl(view) { return 'assets/source/' + S.character + '/three-view/' + view + '.png'; }
+  function paneLayout() {
+    var w = Math.min(stage.clientWidth, cv ? cv.width / dpr : stage.clientWidth);
+    var h = Math.min(stage.clientHeight, cv ? cv.height / dpr : stage.clientHeight);
+    var gap = 10;
+    if (S.layout === 'dual') {
+      var pw = Math.floor((w - gap) / 2);
+      return [
+        { key: 'edit', kind: 'edit', label: '原立绘', x: 0, y: 0, w: pw, h: h },
+        { key: 'stack', kind: 'composite', label: '部件叠加', x: pw + gap, y: 0, w: w - pw - gap, h: h }
+      ];
+    }
+    if (S.layout === 'quad') {
+      var qw = Math.floor((w - gap) / 2), qh = Math.floor((h - gap) / 2);
+      var views = [['front', '正面立绘', 0, 0], ['side', '侧面立绘', qw + gap, 0], ['back', '背面立绘', 0, qh + gap]];
+      var out = views.map(function (v) {
+        return {
+          key: v[0], view: v[0], label: v[1], x: v[2], y: v[3],
+          w: v[0] === 'side' ? w - qw - gap : qw,
+          h: v[0] === 'back' ? h - qh - gap : qh,
+          kind: v[0] === S.view ? 'edit' : 'art'
+        };
+      });
+      out.push({ key: 'stack', kind: 'composite', label: '部件叠加', x: qw + gap, y: qh + gap, w: w - qw - gap, h: h - qh - gap });
+      return out;
+    }
+    return [{ key: 'edit', kind: 'edit', label: '', x: 0, y: 0, w: w, h: h }];
+  }
+  function editPane() {
+    var panes = paneLayout();
+    for (var i = 0; i < panes.length; i++) if (panes[i].kind === 'edit') return panes[i];
+    return panes[0];
+  }
+  function paneAt(x, y) {
+    var panes = paneLayout();
+    for (var i = 0; i < panes.length; i++) {
+      var p = panes[i];
+      if (x >= p.x && y >= p.y && x <= p.x + p.w && y <= p.y + p.h) return p;
+    }
+    return null;
+  }
+  // 四视图：点某张立绘 = 选中它（部件叠加跟着切换；绿框提示）
+  function selectQuadView(view) {
+    if (!view || S.quadSelect === view) { scheduleRender(); return; }
+    S.quadSelect = view;
+    var hasBundle = view === S.view;
+    msg('已选中' + ({ front: '正面', side: '侧面', back: '背面' }[view] || view) + '立绘 · ' +
+      (hasBundle ? '部件叠加显示这个视图的拆件' : '这个视图还没有拆分件'));
+    scheduleRender();
+  }
+  function syncPaneOrigin() {
+    S.panes = paneLayout();
+    S.paneOrigin = { x: S.panes[0].x, y: S.panes[0].y };
+  }
+  function syncBaseToggle() {
+    var onlySingle = S.layout === 'single';
+    var box = $('#useStack');
+    if (box) box.disabled = !onlySingle;
+    var wrap = box && box.parentNode;
+    if (wrap) wrap.title = onlySingle
+      ? '单视图的底图：用完整部件层叠（含被遮挡部分）；取消则用纯原立绘'
+      : '双/四视图的立绘格始终是静态原图；完整部件只影响单视图';
+  }
+  function resetLayoutQuiet() {
+    S.layout = 'single';
+    S.quadSelect = S.view;
+    $$('#viewSeg .btn').forEach(function (b) {
+      b.setAttribute('aria-pressed', b.dataset.layout === 'single' ? 'true' : 'false');
+    });
+    syncPaneOrigin();
+    syncBaseToggle();
+  }
+  function setLayout(mode) {
+    if (S.layout === mode) return;
+    cancelPendingSelection();
+    S.layout = mode;
+    $$('#viewSeg .btn').forEach(function (b) { b.setAttribute('aria-pressed', b.dataset.layout === mode ? 'true' : 'false'); });
+    if (mode === 'quad') S.quadSelect = S.view;
+    syncPaneOrigin();
+    syncBaseToggle();
+    if (mode !== 'single') ensureArtViews();
+    fitView();
+    msg({ single: '单视图', dual: '双视图：左原立绘、右部件叠加', quad: '四视图：正面 / 侧面 / 背面 / 部件叠加' }[mode]);
+  }
+  function ensureArtViews() {
+    ['side', 'back'].forEach(function (v) {
+      if (S.artImages[v] !== undefined) return;
+      S.artImages[v] = null;
+      var img = new Image();
+      img.onload = function () { S.artImages[v] = img; scheduleRender(); };
+      img.onerror = function () { S.artImages[v] = false; scheduleRender(); };
+      img.src = repoUrl(viewArtUrl(v));
+    });
+  }
+  // 每个部件的成品层（含被遮挡补全）；没有层图时退回可见区切图
+  function ensureLayerImages() {
+    if (!S.layerSources) return;
+    Object.keys(S.layerSources).forEach(function (id) {
+      if (S.layerImages[id]) return;
+      var img = new Image();
+      var rec = { img: img, ok: false };
+      S.layerImages[id] = rec;
+      img.onload = function () { rec.ok = true; S.stackDirty = true; scheduleRender(); };
+      img.onerror = function () { rec.ok = false; S.stackDirty = true; scheduleRender(); };
+      img.src = repoUrl(S.layerSources[id]);
+    });
+  }
+  function rebuildStack() {
+    S.stackDirty = false;
+    S.stackCanvas = null;
+    if (!S.img || !S.parts.length) return;
+    var cvs = document.createElement('canvas');
+    cvs.width = S.imgW; cvs.height = S.imgH;
+    var c = cvs.getContext('2d');
+    S.parts.slice().sort(function (a, b) { return a.z - b.z; }).forEach(function (p) {
+      if (p.visible === false) return;
+      var rec = S.layerImages[p.id];
+      if (rec && rec.ok) { c.drawImage(rec.img, 0, 0); return; }
+      var cut = makeCutCanvas(S.maps.visible, partIndex(p.id));
+      if (cut) c.drawImage(cut, 0, 0);
+    });
+    S.stackCanvas = cvs;
+  }
+  function paneSource(p) {
+    if (p.kind === 'art') {
+      if (p.view === S.view && S.img) return { w: S.imgW, h: S.imgH, src: S.img };
+      var a = S.artImages[p.view];
+      return a ? { w: a.naturalWidth, h: a.naturalHeight, src: a } : null;
+    }
+    if (S.stackCanvas) return { w: S.imgW, h: S.imgH, src: S.stackCanvas };
+    return null;
+  }
+  // 所有窗格共用一套缩放/位移（以编辑格为准），四视图才对齐；
+  // 只有「部件叠加」格接受拖动/缩放，改的就是这一套，所以其它格跟着动。
+  function paneFit(p, w, h) {
+    return Math.max(1e-6, Math.min((p.w - 20) / w, (p.h - 20) / h));
+  }
+  function sharedView() {
+    var e = editPane();
+    var w = S.imgW || 1, h = S.imgH || 1;
+    var fit = paneFit(e, w, h);
+    return {
+      z: S.zoom / fit,                                  // 相对“适配”的倍率
+      tx: S.tx - (e.w - w * S.zoom) / 2,
+      ty: S.ty - (e.h - h * S.zoom) / 2
+    };
+  }
+  // 某格把 w×h 的图画在哪里（窗格内坐标 + 缩放）
+  function paneRect(p, w, h) {
+    var sv = sharedView();
+    var sz = paneFit(p, w, h) * sv.z;
+    return { x: (p.w - w * sz) / 2 + sv.tx, y: (p.h - h * sz) / 2 + sv.ty, s: sz };
+  }
+  function fitPaneKey() { fitView(); return true; }
+  // 在部件叠加格里缩放：换算回同一套 S.zoom/S.tx/S.ty
+  function zoomSharedAt(p, cx, cy, factor) {
+    var e = editPane();
+    var w = S.imgW, h = S.imgH;
+    var lx = cx - p.x, ly = cy - p.y;
+    var rc = paneRect(p, w, h);
+    var ix = (lx - rc.x) / rc.s, iy = (ly - rc.y) / rc.s;
+    var sv = sharedView();
+    var z2 = clamp(sv.z * factor, 0.05, 40);
+    var fitE = paneFit(e, w, h), fitC = paneFit(p, w, h);
+    var s2 = fitC * z2;
+    var ntx = lx - (p.w - w * s2) / 2 - ix * s2;
+    var nty = ly - (p.h - h * s2) / 2 - iy * s2;
+    S.zoom = clamp(fitE * z2, 0.02, 16);
+    S.tx = ntx + (e.w - w * S.zoom) / 2;
+    S.ty = nty + (e.h - h * S.zoom) / 2;
+    updateZoomLabel();
+    scheduleRender();
+  }
+  // 光标在“部件叠加”或对应立绘上时，在另一格同位置画一个绿点，方便对齐
+  function drawHoverMarkers() {
+    if (S.layout === 'single' || !S.hoverScreen || !S.hoverPane) return;
+    var hp = S.hoverPane;
+    if (hp.kind === 'art' && hp.view !== S.view) return;    // 侧/背图不是同一张画布，不联动
+    if (hp.kind === 'composite' && S.quadSelect !== S.view) return;
+    var rect = hp.kind === 'edit' ? { x: S.tx, y: S.ty, s: S.zoom } : paneRect(hp, S.imgW, S.imgH);
+    if (!rect || !rect.s) return;
+    var ix = (S.hoverScreen.x - hp.x - rect.x) / rect.s;
+    var iy = (S.hoverScreen.y - hp.y - rect.y) / rect.s;
+    if (!(ix >= 0 && iy >= 0 && ix <= S.imgW && iy <= S.imgH)) return;
+    S.panes.forEach(function (q) {
+      if (q === hp) return;
+      // 编辑格（双视图的“原立绘”、四视图的正面）本身就是当前视图，一律联动
+      var same = (q.kind === 'composite') ? (S.quadSelect === S.view) : (q.kind === 'edit' || q.view === S.view);
+      if (!same) return;
+      var rq = q.kind === 'edit' ? { x: S.tx, y: S.ty, s: S.zoom } : paneRect(q, S.imgW, S.imgH);
+      var mx = q.x + rq.x + ix * rq.s, my = q.y + rq.y + iy * rq.s;
+      if (mx < q.x || my < q.y || mx > q.x + q.w || my > q.y + q.h) return;
+      ctx.save();
+      ctx.beginPath(); ctx.rect(q.x, q.y, q.w, q.h); ctx.clip();
+      // 外圈深色描边 + 绿色实心 + 中心白点，缩到 20% 也还看得见
+      ctx.strokeStyle = '#0d1017';
+      ctx.lineWidth = 3.5;
+      ctx.beginPath(); ctx.arc(mx, my, 7, 0, Math.PI * 2); ctx.stroke();
+      ctx.fillStyle = '#4ec9a5';
+      ctx.beginPath(); ctx.arc(mx, my, 6, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath(); ctx.arc(mx, my, 2.2, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    });
+  }
+  function drawLoupe(mx, my) {
+    var p = S.hoverPane;
+    if (!p || !S.img) return;
+    var src = paneSource(p);
+    if (!src && p.kind === 'edit') src = { w: S.imgW, h: S.imgH, src: (S.baseMode === 'stack' && S.stackCanvas) ? S.stackCanvas : S.img };
+    if (!src || !src.src) return;
+    var t;
+    if (p.kind === 'edit') t = { zoom: S.zoom, tx: S.tx, ty: S.ty };
+    else { var lr = paneRect(p, src.w, src.h); t = { zoom: lr.s, tx: lr.x, ty: lr.y }; }
+    var ix = (mx - p.x - t.tx) / t.zoom, iy = (my - p.y - t.ty) / t.zoom;
+    var R = 86, M = 2.8, sw = (R * 2) / M;
+    ctx.save();
+    ctx.beginPath(); ctx.arc(mx, my, R, 0, Math.PI * 2); ctx.closePath(); ctx.clip();
+    ctx.fillStyle = '#0d1017';
+    ctx.fillRect(mx - R, my - R, R * 2, R * 2);
+    ctx.imageSmoothingEnabled = true;
+    try { ctx.drawImage(src.src, ix - sw / 2, iy - sw / 2, sw, sw, mx - R, my - R, R * 2, R * 2); } catch (e) { /* 源超出时忽略 */ }
+    ctx.restore();
+    ctx.strokeStyle = '#5aa9ff'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(mx, my, R, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = '#ffffff66'; ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(mx - 10, my); ctx.lineTo(mx + 10, my);
+    ctx.moveTo(mx, my - 10); ctx.lineTo(mx, my + 10);
+    ctx.stroke();
+  }
+  function paneText(p, text) {
+    ctx.fillStyle = '#8b98ad';
+    ctx.font = '13px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(text, p.x + p.w / 2, p.y + p.h / 2 + 4);
+    ctx.textAlign = 'left';
+  }
+  function drawPaneFrame(p) {
+    if (S.layout === 'single') return;
+    var picked = S.layout === 'quad' && p.view && p.view === S.quadSelect;
+    ctx.strokeStyle = picked ? '#4ec9a5' : '#2c3444';
+    ctx.lineWidth = picked ? 2 : 1;
+    var inset = picked ? 1.5 : 0.5;
+    ctx.strokeRect(p.x + inset, p.y + inset, p.w - inset * 2, p.h - inset * 2);
+  }
+  function drawPaneLabel(p) {
+    if (!p.label) return;
+    ctx.fillStyle = '#e6ebf5';
+    ctx.font = '12px system-ui, sans-serif';
+    ctx.fillText(p.label, p.x + 8, p.y + 17);
+  }
+
   function render() {
     if (!ctx) return;
     var w = cv.width / dpr, h = cv.height / dpr;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
-    // 棋盘底
-    if (checker) {
-      var pat = ctx.createPattern(checker, 'repeat');
-      ctx.fillStyle = pat;
-      ctx.fillRect(0, 0, w, h);
-    } else {
-      ctx.fillStyle = '#20242e';
-      ctx.fillRect(0, 0, w, h);
-    }
+    ctx.fillStyle = '#11141c';
+    ctx.fillRect(0, 0, w, h);
+    S.panes = paneLayout();
+    S.paneOrigin = { x: S.panes[0].x, y: S.panes[0].y };
     if (!S.img) return;
+    S.panes.forEach(function (p) {
+      ctx.save();
+      ctx.beginPath(); ctx.rect(p.x, p.y, p.w, p.h); ctx.clip();
+      if (checker) {
+        ctx.fillStyle = ctx.createPattern(checker, 'repeat');
+      } else {
+        ctx.fillStyle = '#20242e';
+      }
+      ctx.fillRect(p.x, p.y, p.w, p.h);
+      if (p.kind === 'edit') {
+        ctx.translate(p.x, p.y);
+        renderEditPane();
+      } else if (p.kind === 'art') {
+        var art = p.view === S.view ? S.img : S.artImages[p.view];
+        if (art) {
+          var ra = paneRect(p, art.naturalWidth, art.naturalHeight);
+          ctx.translate(p.x, p.y);
+          ctx.imageSmoothingEnabled = ra.s < 2;
+          ctx.drawImage(art, ra.x, ra.y, art.naturalWidth * ra.s, art.naturalHeight * ra.s);
+        } else {
+          paneText(p, art === false ? '暂无' + p.label : '载入中…');
+        }
+      } else {
+        var sameView = S.quadSelect === S.view;
+        if (sameView && S.stackDirty) rebuildStack();
+        if (sameView && S.stackCanvas) {
+          var rs = paneRect(p, S.imgW, S.imgH);
+          ctx.translate(p.x, p.y);
+          ctx.imageSmoothingEnabled = rs.s < 2;
+          ctx.drawImage(S.stackCanvas, rs.x, rs.y, S.imgW * rs.s, S.imgH * rs.s);
+          // 部件颜色只画在“部件叠加”这一格，三张立绘保持纯静态
+          if (S.showMask) {
+            if (S.overlayDirty) rebuildOverlay();
+            ctx.imageSmoothingEnabled = false;
+            ctx.drawImage(overlayCanvas, rs.x, rs.y, S.imgW * rs.s, S.imgH * rs.s);
+          }
+          // 选中件描边与颜色开关无关，这里也画，方便在叠加图上认位置
+          if (S.showOutline) {
+            if (S.outlineDirty) rebuildOutline();
+            if (S.outlineCanvas) ctx.drawImage(S.outlineCanvas, rs.x, rs.y, S.imgW * rs.s, S.imgH * rs.s);
+          }
+        } else {
+          var which = { front: '正面', side: '侧面', back: '背面' }[S.quadSelect] || '这个';
+          paneText(p, !S.parts.length ? '还没有拆分件' : which + '立绘还没有拆分件');
+        }
+      }
+      ctx.restore();
+      drawPaneFrame(p);
+      drawPaneLabel(p);
+      if (p.kind === 'edit') {
+        drawSelectionOverlay(p.x + S.tx, p.y + S.ty, S.zoom);
+      } else if (p.kind === 'composite' && S.quadSelect === S.view && S.stackCanvas) {
+        var rsel = paneRect(p, S.imgW, S.imgH);
+        drawSelectionOverlay(p.x + rsel.x, p.y + rsel.y, rsel.s);
+      }
+    });
+    drawHoverMarkers();
+    if (S.loupe && S.hoverScreen) drawLoupe(S.hoverScreen.x, S.hoverScreen.y);
+  }
 
+  function renderEditPane() {
     var iw = S.imgW * S.zoom, ih = S.imgH * S.zoom;
     ctx.imageSmoothingEnabled = S.zoom < 2;
-    if (S.showBase) {
-      if (S.visibilityDirty) rebuildVisibility();
-      ctx.drawImage(S.visibilityCanvas || S.img, S.tx, S.ty, iw, ih);
+    if (S.stackDirty) rebuildStack();
+    // 「只看这个部件」看该件成品图；
+    // 单视图：按「完整部件」用层叠图或原立绘（眼睛隐藏的件会留空）；
+    // 双/四视图：立绘格永远是静态原图，眼睛/底图开关只影响「部件叠加」格。
+    var previewing = !S.advanced && S.onlyIssuePart && !!S.partPreview;
+    var useStack = S.baseMode === 'stack' && !!S.stackCanvas && S.layout === 'single';
+    if (previewing) {
+      ctx.drawImage(S.partPreview, S.tx, S.ty, iw, ih);
+    } else if (!S.advanced || S.showBase) {
+      if (S.layout !== 'single') {
+        ctx.drawImage(S.img, S.tx, S.ty, iw, ih);
+      } else if (useStack) {
+        ctx.drawImage(S.stackCanvas, S.tx, S.ty, iw, ih);
+      } else {
+        if (S.visibilityDirty) rebuildVisibility();
+        ctx.drawImage(S.visibilityCanvas || S.img, S.tx, S.ty, iw, ih);
+      }
     }
-    if (S.showMask) {
-      if (S.overlayDirty) rebuildOverlay();
-      if (S.outlineDirty) rebuildOutline();
+    // 部件颜色只在单视图的这块画布上叠；选中件描边与它无关，随时可见
+    if (!previewing && S.layout === 'single') {
       ctx.imageSmoothingEnabled = false;
-      ctx.drawImage(overlayCanvas, S.tx, S.ty, iw, ih);
-      if (S.outlineCanvas) ctx.drawImage(S.outlineCanvas, S.tx, S.ty, iw, ih);
+      if (S.showMask) {
+        if (S.overlayDirty) rebuildOverlay();
+        ctx.drawImage(overlayCanvas, S.tx, S.ty, iw, ih);
+      }
+      if (S.showOutline) {
+        if (S.outlineDirty) rebuildOutline();
+        if (S.outlineCanvas) ctx.drawImage(S.outlineCanvas, S.tx, S.ty, iw, ih);
+      }
     }
-    if (S.showIssues && S.issues.length) {
+    if ((!S.advanced || S.showIssues) && S.issues.length) {
       if (S.issueOverlayDirty) rebuildIssueOverlay();
       if (issueCanvas) {
         ctx.imageSmoothingEnabled = false;
@@ -281,7 +789,11 @@
       }
     }
 
-    // 选区预览
+  }
+
+  // 选区预览与画笔光标：每格按自己的变换画，所以拖在哪一格都能看到虚线框
+  function drawSelectionOverlay(ox, oy, scale) {
+    var toScr = function (ix, iy) { return { x: ox + ix * scale, y: oy + iy * scale }; };
     if (S.selection) {
       ctx.save();
       ctx.strokeStyle = '#5aa9ff';
@@ -290,19 +802,19 @@
       ctx.setLineDash([6, 4]);
       if (S.selection.type === 'rect') {
         var r = S.selection;
-        var a = imageToScreen(r.x0, r.y0), b = imageToScreen(r.x1, r.y1);
+        var a = toScr(r.x0, r.y0), b = toScr(r.x1, r.y1);
         ctx.fillRect(a.x, a.y, b.x - a.x, b.y - a.y);
         ctx.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y);
       } else if (S.selection.type === 'poly' && S.selection.points.length) {
         ctx.beginPath();
-        var p0 = imageToScreen(S.selection.points[0].x, S.selection.points[0].y);
+        var p0 = toScr(S.selection.points[0].x, S.selection.points[0].y);
         ctx.moveTo(p0.x, p0.y);
         for (var i = 1; i < S.selection.points.length; i++) {
-          var p = imageToScreen(S.selection.points[i].x, S.selection.points[i].y);
-          ctx.lineTo(p.x, p.y);
+          var pp = toScr(S.selection.points[i].x, S.selection.points[i].y);
+          ctx.lineTo(pp.x, pp.y);
         }
         if (S.hover) {
-          var hp = imageToScreen(S.hover.x, S.hover.y);
+          var hp = toScr(S.hover.x, S.hover.y);
           ctx.lineTo(hp.x, hp.y);
         }
         ctx.stroke();
@@ -312,12 +824,12 @@
 
     // 画笔光标
     if ((S.tool === 'brush' || S.tool === 'eraser') && S.hover) {
-      var c = imageToScreen(S.hover.x, S.hover.y);
+      var c = toScr(S.hover.x, S.hover.y);
       ctx.save();
       ctx.strokeStyle = '#ffffffcc';
       ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.arc(c.x, c.y, Math.max(2, S.brushSize * S.zoom / 2), 0, Math.PI * 2);
+      ctx.arc(c.x, c.y, Math.max(2, S.brushSize * scale / 2), 0, Math.PI * 2);
       ctx.stroke();
       ctx.restore();
     }
@@ -435,17 +947,34 @@
           '<svg class="ic"><use href="#' + (p.visible ? 'i-eye' : 'i-eye-off') + '"></use></svg></button>' +
         '<button class="zbtn" type="button" data-z="1" title="上移一层">▲</button>' +
         '<button class="zbtn" type="button" data-z="-1" title="下移一层">▼</button>';
-      li.querySelector('.pname').textContent = p.name;
+      li.querySelector('.pname').textContent = S.advanced ? p.name : partLabel(p);
       li.addEventListener('click', function (ev) {
         if (ev.target.closest('.eye')) {
           p.visible = !p.visible;
-          S.overlayDirty = true; S.outlineDirty = true; S.visibilityDirty = true;
+          S.overlayDirty = true; S.outlineDirty = true; S.visibilityDirty = true; S.stackDirty = true;
           renderParts(); scheduleRender();
           ev.stopPropagation(); return;
         }
         var zb = ev.target.closest('.zbtn');
         if (zb) { moveZ(p, Number(zb.dataset.z)); ev.stopPropagation(); return; }
+        // 再点一次同一件 = 取消选择（高亮消失）
+        if (p.id === S.activeId) {
+          S.activeId = null;
+          S.outlineDirty = true; S.overlayDirty = true;
+          renderParts(); scheduleRender();
+          msg('已取消选中 ' + partLabel(p));
+          return;
+        }
         selectPart(p.id);
+        if (!S.advanced) {
+          var it0 = activeIssue();
+          if (it0) {
+            setIssueBeforeFromPart(it0, p.id, { linkPart: true, silent: true });
+            msg('这个问题的问题部件 = ' + partLabel(p) + '，在图上圈出问题位置即可');
+          } else {
+            msg('已选中 ' + partLabel(p) + '；先点「添加问题」才能记录');
+          }
+        }
       });
       list.appendChild(li);
     });
@@ -505,16 +1034,19 @@
     var used = {};
     S.issues.forEach(function (it) { used[it.id] = 1; });
     var n = 1;
-    while (used['issue-' + n]) n++;
+    while (used['issue-' + n] || S.usedIssueIds['issue-' + n]) n++;
+    S.usedIssueIds['issue-' + n] = true;
     return 'issue-' + n;
   }
   function createIssue(opts) {
     if (!S.img) { msg('先载入原立绘/拆件包'); return null; }
+    if (!S.parts.length) { msg('先打开拆件工程：问题必须指向一个已拆分的部件'); return null; }
+    cancelPendingSelection();
     var o = opts || {};
-    var pid = o.partId !== undefined ? o.partId : (S.activeId || '');
+    var pid = o.partId !== undefined ? o.partId : (S.activeId || (sortedParts()[0] ? sortedParts()[0].id : ''));
     var it = {
       id: newIssueId(),
-      type: o.type || 'edge-missing',
+      type: o.type || 'other',
       severity: o.severity || 2,
       partId: pid,
       beforePartId: o.beforePartId !== undefined ? o.beforePartId : pid,
@@ -526,25 +1058,27 @@
     S.activeIssueId = it.id;
     S.issueOverlayDirty = true;
     setDirty(true);
+    setMode('issues');
     setIssueTarget('region');
+    setTool('rect');
     // 有部件时，默认把「改动前」指向当前关联件（= 直接用该件可见区，不用画）
     var filled = false;
     if (S.parts.length && it.beforePartId) {
-      filled = setIssueBeforeFromPart(it, it.beforePartId, { silent: true });
+      filled = setIssueBeforeFromPart(it, it.beforePartId, { silent: true, noHistory: true });
     }
     renderIssues();
     scheduleRender();
-    var bp = filled ? partById(it.beforePartId) : null;
-    msg('已新建问题 ' + it.id + '（' + issueLabel(it.type) + '）' +
-      (bp ? '；改动前 = ' + bp.name : '；还没有拆分部件，先载入现有拆分件才能指定「改动前件」') +
-      '。用矩形 / 多边形 / 魔法棒框选「问题位置」，可多次累加');
+    pushUndo({ type: 'issuePresence', issue: it, index: S.issues.length - 1, before: false, after: true });
+    msg('已添加问题：选部件，圈位置，再写一句说明');
     return it;
   }
   function deleteIssue(it) {
     if (!it) return;
-    if (!confirm('删除问题「' + it.id + ' · ' + issueLabel(it.type) + '」？')) return;
+    if (!confirm('删除这条问题标注？')) return;
+    S.usedIssueIds[it.id] = true;
+    cancelPendingSelection();
     var idx = S.issues.indexOf(it);
-    if (idx >= 0) S.issues.splice(idx, 1);
+    if (idx >= 0) { S.issues.splice(idx, 1); pushUndo({ type: 'issuePresence', issue: it, index: idx, before: true, after: false }); }
     if (S.activeIssueId === it.id) S.activeIssueId = S.issues.length ? S.issues[0].id : null;
     S.issueOverlayDirty = true;
     setDirty(true);
@@ -614,7 +1148,9 @@
     var p = S.parts[idx - 1];
     var src = S.maps.visible;
     if (!src) { msg('还没有可见区掩码'); return false; }
+    var oldMeta = { partId: it.partId, beforePartId: it.beforePartId };
     var map = ensureIssueMask(it, 'before');
+    var entry = { type: 'issueRegion', issueId: it.id, target: 'before', metaBefore: oldMeta };
     var newBox = C.bboxOfValue(src, S.imgW, S.imgH, idx);
     var oldBox = C.bboxOfValue(map, S.imgW, S.imgH, 1);
     var box = unionBox(oldBox, newBox);
@@ -630,13 +1166,12 @@
         }
       }
       var afterRegion = C.extractRegion(map, S.imgW, box);
-      pushUndo({
-        type: 'issueRegion', issueId: it.id, target: 'before',
-        diff: { x0: box.x0, y0: box.y0, w: box.x1 - box.x0, h: box.y1 - box.y0, before: beforeRegion, after: afterRegion }
-      });
+      entry.diff = { x0: box.x0, y0: box.y0, w: box.x1 - box.x0, h: box.y1 - box.y0, before: beforeRegion, after: afterRegion };
     }
     it.beforePartId = partId;
-    if (!it.partId) it.partId = partId;
+    if (!it.partId || (opts && opts.linkPart)) it.partId = partId;
+    entry.metaAfter = { partId: it.partId, beforePartId: it.beforePartId };
+    if (!(opts && opts.noHistory)) pushUndo(entry);
     S.issueOverlayDirty = true;
     setDirty(true);
     renderIssues();
@@ -650,16 +1185,17 @@
     if (!it) { msg('先选中一个问题'); return; }
     var map = it.masks.before;
     var box = map ? C.bboxOfValue(map, S.imgW, S.imgH, 1) : null;
+    var entry = { type: 'issueRegion', issueId: it.id, target: 'before', metaBefore: { partId: it.partId, beforePartId: it.beforePartId } };
     it.beforePartId = null;
+    if (!S.advanced) it.partId = '';
+    entry.metaAfter = { partId: it.partId, beforePartId: it.beforePartId };
     if (box) {
       var beforeRegion = C.extractRegion(map, S.imgW, box);
       C.drawRect(map, S.imgW, S.imgH, box.x0, box.y0, box.x1, box.y1, 0);
       var afterRegion = C.extractRegion(map, S.imgW, box);
-      pushUndo({
-        type: 'issueRegion', issueId: it.id, target: 'before',
-        diff: { x0: box.x0, y0: box.y0, w: box.x1 - box.x0, h: box.y1 - box.y0, before: beforeRegion, after: afterRegion }
-      });
+      entry.diff = { x0: box.x0, y0: box.y0, w: box.x1 - box.x0, h: box.y1 - box.y0, before: beforeRegion, after: afterRegion };
     }
+    pushUndo(entry);
     S.issueOverlayDirty = true;
     setDirty(true);
     renderIssues();
@@ -667,6 +1203,8 @@
     msg('已清除「改动前」');
   }
   function setIssueTarget(t) {
+    if (!S.advanced && t === 'before') return;
+    cancelPendingSelection();
     if (t === 'before' && !S.parts.length) {
       msg('还没有拆分部件：「改动前」要直接选一件（先「载入现有拆分件」或打开拆件包）');
       return;
@@ -679,13 +1217,14 @@
       msg('「改动前」= 直接点画布上的某个拆分部件（或右侧「改动前件」下拉），表示问题发生在哪一件；不用画选区');
     } else {
       if (S.tool === 'select') setTool(S.lastPaintTool || 'rect');
-      msg((t === 'region' ? '「问题位置」' : '「改动后」') + '：矩形 / 多边形 / 魔法棒都能用，选多少次都累加（可多块）；切走就停止添加');
+      msg(t === 'region' ? '圈出有问题的地方，可连续标多处' : '圈出期望的范围，不必一次画完整');
     }
     updateIssueInspector();
     scheduleRender();
   }
   function updateIssueInspector() {
     var it = activeIssue();
+    updateIssueGuide();
     $('#activeIssueId').textContent = it ? it.id : '—';
     // 改动前件下拉：先按部件表重建（与有没有选中问题无关）
     var bsel = $('#issueBeforePart');
@@ -695,7 +1234,7 @@
     sortedParts().forEach(function (p) {
       var opt = document.createElement('option');
       opt.value = p.id;
-      opt.textContent = p.name + ' (' + p.id + ')';
+      opt.textContent = S.advanced ? p.name + ' (' + p.id + ')' : partLabel(p);
       bsel.appendChild(opt);
     });
     bsel.disabled = !S.parts.length;
@@ -711,7 +1250,7 @@
       return;
     }
     var r = maskCount(it.masks.region), b = maskCount(it.masks.before), a = maskCount(it.masks.after);
-    var blocks = issueBlocks(it);
+    var blocks = S.advanced ? issueBlocks(it) : { region: 0, after: 0 };
     $('#issuePxRegion').textContent = fmtPx(r, blocks.region);
     $('#issuePxBefore').textContent = b.toLocaleString();
     $('#issuePxAfter').textContent = fmtPx(a, blocks.after);
@@ -720,11 +1259,13 @@
     $('#issueSeverity').value = String(it.severity);
     $('#issueNote').value = it.note || '';
     var sel = $('#issuePart');
-    sel.innerHTML = '<option value="">（未关联部件）</option>';
+    if (!S.parts.length) sel.innerHTML = '<option value="">（先打开拆件工程）</option>';
+    else if (!it.partId) sel.innerHTML = '<option value="">（请选择有问题的部件）</option>';
+    else sel.innerHTML = '';
     sortedParts().forEach(function (p) {
       var opt = document.createElement('option');
       opt.value = p.id;
-      opt.textContent = p.name + ' (' + p.id + ')';
+      opt.textContent = S.advanced ? p.name + ' (' + p.id + ')' : partLabel(p);
       sel.appendChild(opt);
     });
     sel.value = it.partId || '';
@@ -745,11 +1286,15 @@
       li.innerHTML =
         '<span class="chip" style="background:' + issueColor(it.type) + '"></span>' +
         '<span class="pname"></span>' +
-        '<span class="itype">' + (it.severity === 3 ? '高' : it.severity === 1 ? '低' : '中') + '</span>' +
-        '<span class="ppx mono">' + maskCount(it.masks.region) + '</span>';
-      li.querySelector('.pname').textContent = issueLabel(it.type) + (it.partId ? ' · ' + it.partId : '');
+        '<span class="itype">' + (maskCount(it.masks.region) ? '已圈选' : '待圈选') + '</span>';
+      var p = partById(it.partId);
+      li.querySelector('.pname').textContent = it.note || partLabel(p) + ' · ' + (it.type === 'other' ? '新问题' : $('#issueType option[value="' + it.type + '"]').textContent);
+      li.title = it.note || li.querySelector('.pname').textContent;
+      li.setAttribute('aria-selected', it.id === S.activeIssueId ? 'true' : 'false');
       li.addEventListener('click', function () {
+        cancelPendingSelection();
         S.activeIssueId = it.id;
+        if (!S.advanced) setTool('select');
         S.issueOverlayDirty = true;
         renderIssues();
         scheduleRender();
@@ -759,7 +1304,7 @@
     if (!S.issues.length) {
       var empty = document.createElement('li');
       empty.className = 'part-row dim';
-      empty.textContent = '还没有问题 —— 点「新建问题」，再框选问题区域';
+      empty.textContent = '还没有问题，点上方「添加问题」。';
       list.appendChild(empty);
     }
     $('#issuesCount').textContent = S.issues.length + ' 条';
@@ -786,27 +1331,30 @@
       }
     }
     S.issues.forEach(function (it) {
-      paint(it.masks.region, issueColor(it.type), it.id === active ? 165 : 70);
+      if (S.advanced || it.id === active) paint(it.masks.region, S.advanced ? issueColor(it.type) : '#f57785', it.id === active ? 100 : 50);
     });
     var it = activeIssue();
     if (it) {
-      paint(it.masks.before, '#5aa9ff', 100);
-      paint(it.masks.after, '#4ec9a5', 100);
-      paint(it.masks.region, issueColor(it.type), 170);
+      if (S.advanced) paint(it.masks.before, '#5aa9ff', 100);
+      paint(it.masks.region, S.advanced ? issueColor(it.type) : '#f57785', 100);
+      paint(it.masks.after, '#4ec9a5', 110);
     }
     issueCtx.putImageData(data, 0, 0);
   }
   function setMode(m) {
+    cancelPendingSelection();
+    if (!S.advanced && m === 'parts') m = 'issues';
     S.mode = m;
-    $$('.mode').forEach(function (b) { b.setAttribute('aria-pressed', b.dataset.mode === m ? 'true' : 'false'); });
+    $$('.mode[data-mode]').forEach(function (b) { b.setAttribute('aria-pressed', b.dataset.mode === m ? 'true' : 'false'); });
     S.selection = null;
     updateSelectionBar();
     switchTab(m === 'issues' ? 'issues' : 'parts');
     if (m === 'issues') {
-      msg('问题标注：先新建/选中问题 → 用矩形 / 多边形 / 魔法棒框「问题位置」（可多次累加）；「改动前」直接点选拆分部件，「改动后」同样可多次框选');
+      msg('选部件 → 圈出问题 → 写说明 → 保存');
     } else {
       msg('部件标注模式：选中部件后框选，把可见区归给该件');
     }
+    updateIssueGuide();
     scheduleRender();
   }
   function eraseIssueSelection() {
@@ -814,7 +1362,7 @@
     if (!it) return;
     if (S.issueTarget === 'before') { msg('「改动前」不画选区：直接点画布上的部件（或下拉「改动前件」）'); return; }
     var bbox = currentSelectionBbox();
-    if (!bbox) return;
+    if (!bbox || selectionTooSmall()) { clearSelection(); return; }
     var map = issueTargetMap();
     var before = C.extractRegion(map, S.imgW, bbox);
     if (S.selection.type === 'rect') {
@@ -842,9 +1390,8 @@
     if (!it) { msg('先在「问题」页新建或选中一个问题'); return; }
     if (S.issueTarget === 'before') { msg('「改动前」不画选区：直接点画布上的部件（或下拉「改动前件」）'); return; }
     var bbox = currentSelectionBbox();
-    if (!bbox) return;
+    if (!bbox || selectionTooSmall()) { clearSelection(); return; }
     var map = issueTargetMap();
-    var pxBefore = maskCount(map);
     var before = C.extractRegion(map, S.imgW, bbox);
     if (S.selection.type === 'rect') {
       C.drawRect(map, S.imgW, S.imgH, S.selection.x0, S.selection.y0, S.selection.x1, S.selection.y1, 1);
@@ -862,11 +1409,9 @@
     updateSelectionBar();
     renderIssues();
     scheduleRender();
-    var pxAfter = maskCount(map);
-    var blocks = C.countComponents(map, S.imgW, S.imgH, 1);
-    msg('已累加「' + (S.issueTarget === 'region' ? '问题位置' : '改动后') + '」选区：+' +
-      (pxAfter - pxBefore).toLocaleString() + ' px，累计 ' + pxAfter.toLocaleString() + ' px' +
-      (blocks > 1 ? '（' + blocks + ' 块）' : '') + '；可继续框选，切走即停止添加');
+    var pxAfter = S.advanced ? maskCount(map) : 0;
+    msg(S.advanced ? '已累加选区，累计 ' + pxAfter.toLocaleString() + ' px' :
+      (S.issueTarget === 'region' ? '已标记问题位置' : '已标记期望范围') + '，可继续标；圈好了点「完成圈选」');
   }
 
   // ---------------------------------------------------------------- 撤销
@@ -906,7 +1451,21 @@
     }
     return null;
   }
+  function applyIssueHistory(e, side) {
+    var it = S.issues.filter(function (x) { return x.id === e.issueId; })[0];
+    if (!it) return;
+    if (e.diff) C.applyDiff(ensureIssueMask(it, e.target), S.imgW, e.diff, side);
+    var meta = side === 'before' ? e.metaBefore : e.metaAfter;
+    if (meta) { it.partId = meta.partId; it.beforePartId = meta.beforePartId; }
+    S.activeIssueId = it.id;
+  }
+  function applyIssuePresence(e, side) {
+    var idx = S.issues.indexOf(e.issue);
+    if (e[side]) { if (idx < 0) S.issues.splice(Math.min(e.index, S.issues.length), 0, e.issue); S.activeIssueId = e.issue.id; }
+    else { if (idx >= 0) S.issues.splice(idx, 1); S.activeIssueId = S.issues.length ? S.issues[0].id : null; }
+  }
   function undo() {
+    cancelPendingSelection();
     var e = S.undo.pop();
     if (!e) { msg('没有可撤销的操作'); return; }
     if (e.type === 'all') {
@@ -915,10 +1474,11 @@
       S.maps.hidden = e.maps.hidden;
       S.parts = e.parts; S.activeId = e.activeId; S.nextZ = e.nextZ;
     } else if (e.type === 'issueRegion') {
-      var imap = issueMapById(e.issueId, e.target);
-      if (imap) C.applyDiff(imap, S.imgW, e.diff, 'before');
+      applyIssueHistory(e, 'before');
       S.issueOverlayDirty = true;
       S.redo.push(e);
+    } else if (e.type === 'issuePresence') {
+      applyIssuePresence(e, 'before'); S.redo.push(e);
     } else {
       var target = S.maps[e.channel];
       C.applyDiff(target, S.imgW, e.diff, 'before');
@@ -927,6 +1487,7 @@
     afterHistory();
   }
   function redo() {
+    cancelPendingSelection();
     var e = S.redo.pop();
     if (!e) { msg('没有可重做的操作'); return; }
     if (e.type === 'all') {
@@ -934,10 +1495,11 @@
       S.maps.visible = e.maps.visible; S.maps.hidden = e.maps.hidden;
       S.parts = e.parts; S.activeId = e.activeId; S.nextZ = e.nextZ;
     } else if (e.type === 'issueRegion') {
-      var imap2 = issueMapById(e.issueId, e.target);
-      if (imap2) C.applyDiff(imap2, S.imgW, e.diff, 'after');
+      applyIssueHistory(e, 'after');
       S.issueOverlayDirty = true;
       S.undo.push(e);
+    } else if (e.type === 'issuePresence') {
+      applyIssuePresence(e, 'after'); S.undo.push(e);
     } else {
       C.applyDiff(S.maps[e.channel], S.imgW, e.diff, 'after');
       S.undo.push(e);
@@ -951,6 +1513,12 @@
 
   // ---------------------------------------------------------------- 选区
   function currentSelectionBbox() {
+    var b = rawSelectionBbox();
+    if (!b) return null;
+    b = { x0: clamp(Math.floor(b.x0), 0, S.imgW), y0: clamp(Math.floor(b.y0), 0, S.imgH), x1: clamp(Math.ceil(b.x1), 0, S.imgW), y1: clamp(Math.ceil(b.y1), 0, S.imgH) };
+    return b.x1 > b.x0 && b.y1 > b.y0 ? b : null;
+  }
+  function rawSelectionBbox() {
     var s = S.selection;
     if (!s) return null;
     if (s.type === 'rect') return { x0: Math.min(s.x0, s.x1), y0: Math.min(s.y0, s.y1), x1: Math.max(s.x0, s.x1), y1: Math.max(s.y0, s.y1) };
@@ -959,6 +1527,12 @@
       return { x0: Math.min.apply(null, xs), y0: Math.min.apply(null, ys), x1: Math.max.apply(null, xs), y1: Math.max.apply(null, ys) };
     }
     return null;
+  }
+  // 单击（没拖动）不算选区：按原始坐标判断，避免 floor/ceil 把 0 尺寸撑成 1px
+  function selectionTooSmall() {
+    var b = rawSelectionBbox();
+    if (!b) return true;
+    return (b.x1 - b.x0) < 0.75 || (b.y1 - b.y0) < 0.75;
   }
   function updateSelectionBar() {
     var bar = $('#selectionBar');
@@ -969,6 +1543,7 @@
     $('#selectionInfo').textContent = S.selection.type === 'rect'
       ? '矩形 ' + w + '×' + h + ' @' + Math.round(bbox.x0) + ',' + Math.round(bbox.y0)
       : '多边形 ' + S.selection.points.length + ' 顶点 · 包围盒 ' + w + '×' + h;
+    if (S.mode === 'issues') updateIssueGuide();
   }
   function rasterizeSelection(value) {
     var bbox = currentSelectionBbox();
@@ -986,6 +1561,12 @@
     renderParts(); scheduleRender();
   }
   function applySelection(mode) {
+    if (S.mode === 'issues') {
+      if (mode === 'assign') applyIssueSelection();
+      else if (mode === 'subtract') eraseIssueSelection();
+      return;
+    }
+    if (!S.advanced) return;
     if (!S.selection) { msg('先框选一个区域'); return; }
     var idx = partIndex(S.activeId);
     if (mode !== 'new' && !idx) { msg('先在右侧选中一个部件（或用「新建部件」）'); return; }
@@ -1014,6 +1595,7 @@
   // 当前编辑目标：部件通道 或 当前问题的某个目标掩码
   function strokeContext() {
     if (S.mode === 'issues') {
+      if (S.issueTarget === 'before') return null;
       var it = activeIssue();
       if (!it) return null;
       return { kind: 'issue', map: issueTargetMap(), value: S.tool === 'brush' ? 1 : 0, issueId: it.id, target: S.issueTarget };
@@ -1025,8 +1607,7 @@
 
   function beginStroke(ev) {
     if (!S.img) return;
-    var rect = cv.getBoundingClientRect();
-    var pt = screenToImage(ev.clientX - rect.left, ev.clientY - rect.top);
+    var pt = imagePointFor(ev);
     S.drag = { start: pt, last: pt, button: ev.button };
     if (ev.button === 1 || ev.button === 2 || ev.shiftKey === false) { /* noop */ }
     if (S.tool === 'select' || ev.button === 1 || spaceDown) {
@@ -1053,8 +1634,7 @@
 
   function moveStroke(ev) {
     if (!S.img) return;
-    var rect = cv.getBoundingClientRect();
-    var pt = screenToImage(ev.clientX - rect.left, ev.clientY - rect.top);
+    var pt = imagePointFor(ev);
     S.hover = pt;
     if (!S.drag) { scheduleRender(); return; }
     if (S.drag.mode === 'pan') {
@@ -1087,12 +1667,12 @@
     if (!S.img) return;
     cv.classList.remove('panning');
     if (S.drag && S.drag.mode === 'pan') {
+      if (!S.advanced) { S.drag = null; return; }
       var moved = Math.abs((ev.clientX - S.drag.panStart.sx)) + Math.abs((ev.clientY - S.drag.panStart.sy));
       if (moved < 4 && S.tool === 'select') {
         // 单击选择：取该像素最上层的部件
-        var rect = cv.getBoundingClientRect();
-        var pt = screenToImage(ev.clientX - rect.left, ev.clientY - rect.top);
-        var x = Math.floor(pt.x), y = Math.floor(pt.y);
+        var pt = imagePointFor(ev);
+        var x = pixelAt(pt.x), y = pixelAt(pt.y);
         if (x >= 0 && x < S.imgW && y >= 0 && y < S.imgH) {
           if (S.mode === 'issues' && S.issueTarget === 'before') {
             // 「改动前」= 直接点选一个已拆分部件，不画选区
@@ -1112,8 +1692,7 @@
       S.drag = null; return;
     }
     if (S.tool === 'rect' && S.selection && S.selection.type === 'rect') {
-      var bbox = currentSelectionBbox();
-      if (bbox && bbox.x1 - bbox.x0 >= 1 && bbox.y1 - bbox.y0 >= 1) {
+      if (!selectionTooSmall()) {
         if (S.mode === 'issues') applyIssueSelection();
         else if (S.autoAssign) applySelection('assign');
         else updateSelectionBar();
@@ -1124,9 +1703,9 @@
       if (S.drag && S.drag.stroke) {
         var st = S.drag.stroke;
         var map = st.map;
-        if (st.before) {
+        if (st.beforeMap) {
           var after = C.extractRegion(map, S.imgW, st.bbox);
-          var diff = { x0: st.bbox.x0, y0: st.bbox.y0, w: st.bbox.x1 - st.bbox.x0, h: st.bbox.y1 - st.bbox.y0, before: st.before, after: after };
+          var diff = { x0: st.bbox.x0, y0: st.bbox.y0, w: st.bbox.x1 - st.bbox.x0, h: st.bbox.y1 - st.bbox.y0, before: C.extractRegion(st.beforeMap, S.imgW, st.bbox), after: after };
           if (st.kind === 'issue') pushUndo({ type: 'issueRegion', issueId: st.issueId, target: st.target, diff: diff });
           else pushUndo({ type: 'region', channel: st.channel, diff: diff });
         }
@@ -1143,16 +1722,41 @@
 
   // ---------------------------------------------------------------- 事件
   var spaceDown = false;
+  var quadClick = null;   // 四视图：按下时记住落在哪张立绘上，抬起未拖动就选中它
   function bindEvents() {
     cv.addEventListener('pointerdown', function (ev) {
       if (ev.button === 2) return;
+      if (S.layout !== 'single') {
+        var rq = cv.getBoundingClientRect();
+        var mxq = ev.clientX - rq.left, myq = ev.clientY - rq.top;
+        var pq = paneAt(mxq, myq);
+        quadClick = pq && pq.view ? { view: pq.view, x: ev.clientX, y: ev.clientY } : null;
+        var paintOnComposite = pq && pq.kind === 'composite' && S.quadSelect === S.view &&
+          S.tool !== 'select' && ev.button !== 1 && !spaceDown;
+        if (pq && pq.kind !== 'edit' && !paintOnComposite) {
+          if (pq.kind === 'composite' && (ev.button === 1 || spaceDown || S.tool === 'select')) {
+            cv.setPointerCapture(ev.pointerId);
+            S.drag = { mode: 'panePan', px: mxq, py: myq, tx: S.tx, ty: S.ty };
+            cv.classList.add('panning');
+            return;
+          }
+          if (S.layout === 'quad' && pq.view) {
+            // 静态立绘：只做“选中”，不在上面画东西
+            cv.setPointerCapture(ev.pointerId);
+            S.drag = { mode: 'pick', start: { x: ev.clientX, y: ev.clientY }, view: pq.view };
+          }
+          return;
+        }
+      }
+      if (!canDrawAt(ev) && !(ev.button === 1 || spaceDown)) return;
       cv.setPointerCapture(ev.pointerId);
+      if (ev.button === 1 || spaceDown) { beginStroke(ev); return; }
+      if (S.mode === 'issues' && !activeIssue() && S.tool !== 'select') { msg('先点「添加问题」'); return; }
       if (S.tool === 'wand') { applyWand(ev); return; }
       if (S.tool === 'brush' || S.tool === 'eraser') {
         var cx = strokeContext();
         if (cx) {
-          var rect = cv.getBoundingClientRect();
-          var pt = screenToImage(ev.clientX - rect.left, ev.clientY - rect.top);
+          var pt = imagePointFor(ev);
           var st = { kind: cx.kind, map: cx.map, channel: cx.channel, issueId: cx.issueId, target: cx.target, value: cx.value, points: [pt] };
           // 先算 bbox 与 before，再落第一笔（否则撤销回不到笔前）
           var bx0 = clamp(Math.floor(pt.x - S.brushSize / 2), 0, S.imgW);
@@ -1160,7 +1764,7 @@
           var bx1 = clamp(Math.ceil(pt.x + S.brushSize / 2) + 1, 0, S.imgW);
           var by1 = clamp(Math.ceil(pt.y + S.brushSize / 2) + 1, 0, S.imgH);
           st.bbox = { x0: bx0, y0: by0, x1: bx1, y1: by1 };
-          st.before = C.extractRegion(cx.map, S.imgW, st.bbox);
+          st.beforeMap = cx.map.slice();
           C.drawBrush(cx.map, S.imgW, S.imgH, pt.x, pt.y, S.brushSize / 2, st.value);
           S.drag = { stroke: st, start: pt };
           if (st.kind === 'issue') S.issueOverlayDirty = true; else S.overlayDirty = true;
@@ -1172,13 +1776,39 @@
       beginStroke(ev);
     });
     cv.addEventListener('pointermove', function (ev) {
-      var rect = cv.getBoundingClientRect();
-      S.hover = screenToImage(ev.clientX - rect.left, ev.clientY - rect.top);
+      S.hover = imagePointFor(ev);
+      var rcq = cv.getBoundingClientRect();
+      S.hoverScreen = { x: ev.clientX - rcq.left, y: ev.clientY - rcq.top };
+      S.hoverPane = S.layout === 'single' ? paneAt(S.hoverScreen.x, S.hoverScreen.y) : paneAt(S.hoverScreen.x, S.hoverScreen.y);
+      if (S.drag && S.drag.mode === 'panePan') {
+        S.tx = S.drag.tx + (ev.clientX - rcq.left - S.drag.px);
+        S.ty = S.drag.ty + (ev.clientY - rcq.top - S.drag.py);
+        scheduleRender();
+        return;
+      }
+      if (S.loupe || S.layout !== 'single') scheduleRender();
       if (!S.drag) { if (S.tool === 'poly' || S.tool === 'brush' || S.tool === 'eraser') scheduleRender(); return; }
       moveStroke(ev);
     });
-    cv.addEventListener('pointerup', function (ev) { endStroke(ev); });
-    cv.addEventListener('pointercancel', function () { S.drag = null; });
+    cv.addEventListener('pointerup', function (ev) {
+      if (S.drag && S.drag.mode === 'panePan') { S.drag = null; cv.classList.remove('panning'); return; }
+      if (S.drag && S.drag.mode === 'pick') {
+        var moved = Math.abs(ev.clientX - S.drag.start.x) + Math.abs(ev.clientY - S.drag.start.y);
+        var view = S.drag.view;
+        S.drag = null;
+        if (moved < 6) selectQuadView(view);
+        quadClick = null;
+        return;
+      }
+      if (quadClick) {
+        var moved2 = Math.abs(ev.clientX - quadClick.x) + Math.abs(ev.clientY - quadClick.y);
+        var clickedView = quadClick.view;
+        quadClick = null;
+        if (moved2 < 6) selectQuadView(clickedView);
+      }
+      endStroke(ev);
+    });
+    cv.addEventListener('pointercancel', function () { quadClick = null; cancelPendingSelection(); });
     cv.addEventListener('pointerleave', function () { S.hover = null; scheduleRender(); });
     cv.addEventListener('contextmenu', function (ev) { ev.preventDefault(); });
     stage.addEventListener('contextmenu', function (ev) {
@@ -1190,6 +1820,16 @@
     }, true);
     window.addEventListener('wheel', function () { closeContextMenu(); }, { passive: true });
     cv.addEventListener('dblclick', function (ev) {
+      if (S.layout !== 'single') {
+        var rd = cv.getBoundingClientRect();
+        var pd = paneAt(ev.clientX - rd.left, ev.clientY - rd.top);
+        if (pd && pd.kind !== 'edit') {
+          ev.preventDefault();
+          fitView();
+          msg('已把四格一起适配到窗口');
+          return;
+        }
+      }
       if (S.tool === 'poly' && S.selection && S.selection.type === 'poly') {
         ev.preventDefault();
         if (S.selection.points.length >= 3) {
@@ -1203,18 +1843,27 @@
     cv.addEventListener('wheel', function (ev) {
       ev.preventDefault();
       if (!S.img) return;
-      var rect = cv.getBoundingClientRect();
-      var before = screenToImage(ev.clientX - rect.left, ev.clientY - rect.top);
+      if (S.layout !== 'single') {
+        var rw = cv.getBoundingClientRect();
+        var mwx = ev.clientX - rw.left, mwy = ev.clientY - rw.top;
+        var pw = paneAt(mwx, mwy);
+        if (pw && pw.kind === 'composite') { zoomSharedAt(pw, mwx, mwy, ev.deltaY < 0 ? 1.12 : 1 / 1.12); return; }
+        if (pw && pw.kind !== 'edit') return;   // 立绘格不单独缩放，保持坐标对齐
+      }
+      var cpw = cursorPos(ev);
+      var before = screenToImage(cpw.x, cpw.y);
       var factor = ev.deltaY < 0 ? 1.12 : 1 / 1.12;
       S.zoom = clamp(S.zoom * factor, 0.02, 16);
-      S.tx = ev.clientX - rect.left - before.x * S.zoom;
-      S.ty = ev.clientY - rect.top - before.y * S.zoom;
+      S.tx = cpw.x - before.x * S.zoom;
+      S.ty = cpw.y - before.y * S.zoom;
       updateZoomLabel();
       scheduleRender();
     }, { passive: false });
 
     window.addEventListener('keydown', function (ev) {
+      if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 's') { ev.preventDefault(); saveBundle(!!ev.shiftKey); return; }
       if (isEditableTarget(ev.target)) return;
+      if (ev.key === 'Alt') { ev.preventDefault(); if (!S.loupe) { S.loupe = true; scheduleRender(); } return; }
       if (ev.code === 'Space') { spaceDown = true; cv.classList.add('pan'); return; }
       var k = ev.key.toLowerCase();
       if ((ev.ctrlKey || ev.metaKey) && k === 'z') { ev.preventDefault(); ev.shiftKey ? redo() : undo(); return; }
@@ -1246,7 +1895,7 @@
           S.selection.points.pop(); updateSelectionBar(); scheduleRender(); return;
         }
       }
-      if (k === 'escape') { clearSelection(); closeContextMenu(); closeDialog(); return; }
+      if (k === 'escape') { stopDrawing(false); closeDialog(); return; }
       if (k === '?') { openHelp(); return; }
       if (k === 'f') { fitView(); return; }
       if (k === '+' || k === '=') { zoomBy(1.15); return; }
@@ -1258,12 +1907,14 @@
       if (k === 'e') return setTool('eraser');
       if (k === 'w') return setTool('wand');
       if (k === 'm') { $('#showMask').checked = !$('#showMask').checked; toggleShowMask($('#showMask').checked); return; }
-      if (k === '[') { if (activePart()) moveZ(activePart(), -1); return; }
-      if (k === ']') { if (activePart()) moveZ(activePart(), 1); return; }
+      if (k === '[') { if (S.advanced && S.mode === 'parts' && activePart()) moveZ(activePart(), -1); return; }
+      if (k === ']') { if (S.advanced && S.mode === 'parts' && activePart()) moveZ(activePart(), 1); return; }
     });
     window.addEventListener('keyup', function (ev) {
       if (ev.code === 'Space') { spaceDown = false; cv.classList.remove('pan'); }
+      if (ev.key === 'Alt' && S.loupe) { S.loupe = false; scheduleRender(); }
     });
+    window.addEventListener('blur', function () { if (S.loupe) { S.loupe = false; scheduleRender(); } });
     window.addEventListener('resize', layoutCanvas);
 
     // 工具切换
@@ -1323,9 +1974,14 @@
     });
     $('#issuePart').addEventListener('change', function () {
       var it = activeIssue(); if (!it) return;
-      it.partId = this.value; setDirty(true); renderIssues();
+      cancelPendingSelection();
+      if (!S.advanced) {
+        if (this.value) setIssueBeforeFromPart(it, this.value, { linkPart: true, silent: true });
+        else clearIssueBefore(it);
+      } else { it.partId = this.value; setDirty(true); renderIssues(); }
+      msg('已选部件，可在图上圈出问题');
     });
-    $('#issueNote').addEventListener('change', function () {
+    $('#issueNote').addEventListener('input', function () {
       var it = activeIssue(); if (!it) return;
       it.note = this.value; setDirty(true);
     });
@@ -1349,12 +2005,25 @@
     $('#btnFit').addEventListener('click', fitView);
     $('#btnZoomIn').addEventListener('click', function () { zoomBy(1.15); });
     $('#btnZoomOut').addEventListener('click', function () { zoomBy(1 / 1.15); });
-    $('#btnSave').addEventListener('click', saveBundle);
+    $('#btnSave').addEventListener('click', function () { saveBundle(false); });
+    $('#btnIssueSave').addEventListener('click', function () { saveBundle(false); });
+    $('#btnAdvanced').addEventListener('click', function () { setAdvanced(!S.advanced); });
+    $('#btnStopDrawing').addEventListener('click', stopDrawing);
+    $('#btnUndo').addEventListener('click', undo);
+    $('#btnOpenBundle').addEventListener('click', openBundleDialog);
+    $('#btnEmptyBundle').addEventListener('click', openBundleDialog);
+    $$('#viewSeg .btn').forEach(function (b) { b.addEventListener('click', function () { setLayout(b.dataset.layout); }); });
+    $('#useStack').addEventListener('change', function () {
+      S.baseMode = this.checked ? 'stack' : 'art';
+      if (this.checked) { ensureLayerImages(); S.stackDirty = true; }
+      scheduleRender();
+    });
+    $('#onlyIssuePart').addEventListener('change', function () { cancelPendingSelection(); S.onlyIssuePart = this.checked; refreshPartPreview(); updateIssueGuide(); scheduleRender(); });
     $('#btnPanel').addEventListener('click', function () { document.body.classList.toggle('drawer-open'); });
     $('#btnPanelClose').addEventListener('click', function () { document.body.classList.remove('drawer-open'); });
-    $('#tabParts').addEventListener('click', function () { switchTab('parts'); });
+    $('#tabParts').addEventListener('click', function () { if (S.advanced) setMode('parts'); else switchTab('parts'); });
     $('#tabIssues').addEventListener('click', function () { setMode('issues'); });
-    $('#tabHelp').addEventListener('click', function () { switchTab('help'); });
+    $('#tabHelp').addEventListener('click', function () { stopDrawing(false); switchTab('help'); });
     $('#dialogClose').addEventListener('click', closeDialog);
     $('#dialogCancel').addEventListener('click', closeDialog);
 
@@ -1379,7 +2048,6 @@
           'load-source': openSourceDialog,
           'load-split': openSplitDialog,
           'open-project': openProjectDialog,
-          'save': saveBundle,
           'load-bundle': openBundleDialog,
           'load-bundle-path': openBundleByPath,
           'save': function () { saveBundle(false); },
@@ -1432,7 +2100,10 @@
     scheduleRender();
   }
   function setTool(t) {
+    if (t !== S.tool) cancelPendingSelection();
     S.tool = t;
+    if (t !== 'select') S.lastPaintTool = t;
+    updateIssueGuide();
     $$('.tool').forEach(function (b) { b.setAttribute('aria-pressed', b.dataset.tool === t ? 'true' : 'false'); });
     cv.classList.toggle('pan', t === 'select');
     if (t !== 'poly') { /* 保留多边形选区？切换工具时清掉未闭合多边形 */ }
@@ -1483,6 +2154,7 @@
     $('#paneHelp').hidden = which !== 'help';
   }
   function openHelp() {
+    stopDrawing(false);
     switchTab('help');
     document.body.classList.add('drawer-open');
   }
@@ -1525,6 +2197,23 @@
     var hasSel = !!S.selection;
     var hasPart = !!activePart();
     var hasIssue = !!activeIssue();
+    if (!S.advanced) {
+      item('完成圈选', 'Esc', hasIssue, stopDrawing);
+      item('取消未完成的选框', '', hasSel, cancelPendingSelection);
+      item(S.mode === 'issues' ? '取消选中问题' : '取消选中部件', '', S.mode === 'issues' ? hasIssue : hasPart,
+        S.mode === 'issues' ? deselectIssue : deselectPart);
+      sep();
+      item('撤销', 'Ctrl+Z', S.undo.length > 0, undo);
+      item('重做', 'Ctrl+Shift+Z', S.redo.length > 0, redo);
+      sep();
+      item(S.showIssues ? '隐藏问题层' : '显示问题层', 'I', S.issues.length > 0, function () {
+        S.showIssues = !S.showIssues;
+        $('#showIssuesChk').checked = S.showIssues;
+        S.issueOverlayDirty = true; scheduleRender();
+      });
+      item('适配画面', 'F', !!S.img, fitView);
+      item('保存标注', 'Ctrl+S', !!S.img, function () { saveBundle(false); });
+    } else {
     item('取消选区', 'Esc', hasSel, clearSelection);
     if (S.mode === 'issues') item('取消选中问题', '', hasIssue, deselectIssue);
     else item('取消选中部件', '', hasPart, deselectPart);
@@ -1548,6 +2237,7 @@
     });
     item('适配全部', 'F', !!S.img, fitView);
     item('保存拆件包', 'Ctrl+S', !!S.img, function () { saveBundle(false); });
+    }
     document.body.appendChild(menu);
     var rect = menu.getBoundingClientRect();
     var x = Math.min(px, window.innerWidth - rect.width - 8);
@@ -1596,9 +2286,15 @@
     S.channel = 'visible';
     S.parts = [];
     S.layerSources = {};
+    S.layerImages = {};
+    S.stackCanvas = null;
+    S.stackDirty = true;
     S.visibilityDirty = true;
     S.visibilityCanvas = null;
     S.issues = [];
+    S.usedIssueIds = {};
+    S.onlyIssuePart = false; S.partPreview = null; S.partPreviewPixels = null; S.partPreviewKey = '';
+    $('#onlyIssuePart').checked = false;
     S.activeIssueId = null;
     S.issueTarget = 'region';
     S.issueOverlayDirty = true;
@@ -1609,6 +2305,7 @@
     S.projectDir = '';
     S.projectName = '';
     S.reportSource = '';
+    S.bundleCreatedAt = '';
     // 取 base 像素供魔法棒
     var off = document.createElement('canvas');
     off.width = S.imgW; off.height = S.imgH;
@@ -1624,7 +2321,9 @@
     renderIssues();
     fitView();
     setDirty(false);
-    msg('已载入 ' + S.imgW + '×' + S.imgH + '：' + (sourcePath || '本地文件') + '；右侧新建部件后开始框选');
+    if (!S.advanced) setTool('select');
+    resetLayoutQuiet();
+    msg('图片已打开，点「添加问题」开始');
   }
 
   function loadImageUrl(url, sourcePath) {
@@ -1752,7 +2451,9 @@
           nameToPart[name] = part;
           S.layerSources[part.id] = baseDir + '/' + p.file;
         });
-        S.activeId = S.parts.length ? S.parts[0].id : null;
+        // 打开工程时不预选任何部件：由用户点选，避免一进来就有一块被高亮
+        S.activeId = null;
+        S.outlineDirty = true; S.overlayDirty = true;
         // 逐件把 alpha 填成候选掩码：后 → 前，靠前的覆盖靠后的（与可见归属一致）
         var chain = Promise.resolve();
         order.forEach(function (name) {
@@ -1810,7 +2511,9 @@
         S.maps.hidden = proj.channels && proj.channels.hidden ? C.createLabelMap(S.imgW, S.imgH) : null;
         S.projectDir = dir;
         S.projectName = dir.split('/').pop();
-        S.activeId = S.parts.length ? S.parts[0].id : null;
+        // 打开工程时不预选任何部件：由用户点选，避免一进来就有一块被高亮
+        S.activeId = null;
+        S.outlineDirty = true; S.overlayDirty = true;
         var chain = loadLabelPng(dir + '/label.png', S.maps.visible);
         if (S.maps.hidden) chain = chain.then(function () { return loadLabelPng(dir + '/label-hidden.png', S.maps.hidden); });
         return chain.then(function () {
@@ -1848,15 +2551,16 @@
   // ---------------------------------------------------------------- 魔法棒
   function applyWand(ev) {
     if (!S.img || !S.basePixels) return;
-    var rect = cv.getBoundingClientRect();
-    var pt = screenToImage(ev.clientX - rect.left, ev.clientY - rect.top);
-    var x = Math.floor(pt.x), y = Math.floor(pt.y);
+    if (!S.advanced && S.onlyIssuePart && !S.partPreviewPixels) { msg('部件图片正在载入，请稍候'); return; }
+    var pixels = !S.advanced && S.onlyIssuePart ? S.partPreviewPixels : S.basePixels;
+    var pt = imagePointFor(ev);
+    var x = pixelAt(pt.x), y = pixelAt(pt.y);
     if (!(x >= 0 && x < S.imgW && y >= 0 && y < S.imgH)) {
       clearSelection();
       msg('点在画布外：已取消选区');
       return;
     }
-    var alphaAt = S.basePixels[(y * S.imgW + x) * 4 + 3];
+    var alphaAt = pixels[(y * S.imgW + x) * 4 + 3];
     if (alphaAt < C.MASK_ALPHA_THRESHOLD) {
       clearSelection();
       msg('点在透明区域：已取消选区');
@@ -1871,7 +2575,7 @@
     var map = isIssue ? issueTargetMap() : S.maps[S.channel];
     // 先复制一份求差异（魔法棒可能大面积扩散）
     var before = map.slice();
-    var bbox = C.floodFill(S.basePixels, S.imgW, S.imgH, x, y, S.tolerance, map, idx);
+    var bbox = C.floodFill(pixels, S.imgW, S.imgH, x, y, S.tolerance, map, idx);
     if (!bbox) { msg('该处颜色区域为空或已经是当前目标'); return; }
     var beforeRegion = C.extractRegion(before, S.imgW, bbox);
     var afterRegion = C.extractRegion(map, S.imgW, bbox);
@@ -2104,7 +2808,8 @@
       height: S.imgH,
       source: S.sourcePath,
       baseSha256: await sha256Bytes(baseBytes),
-      parts: partsList.parts.length
+      parts: partsList.parts.length,
+      createdAt: S.bundleCreatedAt || undefined
     });
     index.partsFile = 'parts.json';
     index.files.masks = 'masks/';
@@ -2145,7 +2850,20 @@
   }
 
   async function saveBundle(saveAs) {
-    if (!S.img) { msg('先载入原立绘'); return; }
+    if (!S.img) { msg('先打开图片或工程'); return; }
+    cancelPendingSelection();
+    var unfinished = S.issues.filter(function (it) { return !maskCount(it.masks.region); })[0];
+    if (unfinished) {
+      S.activeIssueId = unfinished.id; setMode('issues'); renderIssues();
+      msg('这个问题还没圈位置：圈一下再保存，或删除这条问题');
+      return;
+    }
+    var missingPart = S.issues.filter(function (it) { return !it.partId || !partById(it.partId); })[0];
+    if (missingPart) {
+      S.activeIssueId = missingPart.id; setMode('issues'); renderIssues();
+      msg('这个问题还没选「哪个部件有问题」：在第 1 步选一件，再保存');
+      return;
+    }
     var targetName = S.projectName;
     if (saveAs || !targetName) {
       targetName = prompt(
@@ -2180,7 +2898,8 @@
       S.projectName = name;
       S.projectDir = data.dir;
       setDirty(false);
-      msg('已保存拆件包到 ' + data.dir + '（' + data.files.length + ' 个文件，' + Math.round(data.bytes / 1024) + ' KB）');
+      msg(S.advanced ? '已保存拆件包到 ' + data.dir : '✓ 标注已保存到「' + name + '」');
+      renderIssues();
     } catch (e) {
       msg('保存失败：' + e.message + '（可在只读服务下用「导出拆件包 ZIP」）');
     }
@@ -2223,19 +2942,26 @@
       S.character = idx.character;
       S.view = idx.view;
       S.layerSources = {};
+      S.layerImages = {};
+      S.stackDirty = true;
       S.parts = pl.parts.map(function (p) {
         return { id: p.id, name: p.name, color: p.color || C.paletteColor(0), z: p.z | 0, note: p.note || '', visible: true };
       }).sort(function (a, b) { return a.z - b.z; });
       pl.parts.forEach(function (p) {
         if (p.files && p.files.layer) S.layerSources[p.id] = dir + '/' + p.files.layer;
       });
+      ensureLayerImages();
       S.nextZ = S.parts.reduce(function (m, p) { return Math.max(m, p.z); }, 0) + 1;
       S.maps.visible = C.createLabelMap(S.imgW, S.imgH);
       S.maps.hidden = idx.files && idx.files.hidden ? C.createLabelMap(S.imgW, S.imgH) : null;
       S.projectDir = dir;
       S.projectName = dir.split('/').pop();
       S.reportSource = (idx.files && idx.files.report) ? (dir + '/' + idx.files.report) : '';
-      S.activeId = S.parts.length ? S.parts[0].id : null;
+      S.bundleCreatedAt = idx.createdAt || '';
+      S.quadSelect = idx.view || 'front';
+      // 打开工程时不预选任何部件：由用户点选，避免一进来就有一块被高亮
+      S.activeId = null;
+      S.outlineDirty = true; S.overlayDirty = true;
       S.visibilityDirty = true;
       // 载入顺序：后 → 前。有 mask 用 mask；只有 layer 时按 alpha>10 填
       var chain = Promise.resolve();
@@ -2282,17 +3008,22 @@
             }
             return Promise.all(jobs);
           }));
+        }).catch(function (err) {
+          // issues.json 缺失 / 读不到时不能让整个工程打不开，按“没有问题记录”处理
+          S.issues = [];
+          S.activeIssueId = null;
+          if (window.console && console.warn) console.warn('[part-annotator] 读取问题记录失败，按空处理：', err && err.message);
+          return Promise.resolve();
         });
       };
       return chain.then(function () { renderParts(); }).then(finish).then(function () {
         S.overlayDirty = true; S.outlineDirty = true; S.visibilityDirty = true;
         S.issueOverlayDirty = true;
         renderIssues();
+        resetLayoutQuiet();
         fitView();
         setDirty(false);
-        msg('已打开拆件包 ' + dir + '（' + S.parts.length + ' 件' +
-          (S.issues.length ? ' / ' + S.issues.length + ' 条问题' : '') +
-          '，index.json v' + idx.schemaVersion + '）');
+        msg(S.advanced ? '已打开拆件包 ' + dir : '已打开「' + S.projectName + '」 · ' + S.issues.length + ' 条问题');
       });
     });
   }
@@ -2368,7 +3099,7 @@
         };
       });
       if (!items.length) items.push({ label: '还没有拆件包', meta: '先标注并「保存拆件包」', action: function () {} });
-      openDialog('打开拆件包', '来自 workspace/characters/' + character + '/parts-bundles/*/index.json（自包含，可整体移动）。', items);
+      openDialog('打开工程', '选择要继续标注的工程。', items);
     }).catch(function (e) { msg('读取拆件包列表失败：' + e.message); });
   }
 
@@ -2384,11 +3115,20 @@
     updateZoomLabel();
     renderParts();
     renderIssues();
-    setMode('parts');
+    setMode('issues');
+    setTool('select');
+    syncPaneOrigin();
+    // 默认看原图：部件颜色按需打开（高级编辑里沿用原来的默认开启）
+    $('#showMask').checked = S.showMask = S.advanced;
+    $('#useStack').checked = S.baseMode === 'stack';
+    resetLayoutQuiet();
+    document.body.dataset.build = BUILD;
+    window.__partAnnotatorBuild = BUILD;
+    if (window.console && console.info) console.info('[part-annotator] build ' + BUILD);
 
     fetchJson('/api/capabilities').then(function (caps) {
       S.caps = caps;
-      msg('服务就绪（' + ((caps.saveBundle || caps.saveProject) ? '可保存拆件包到 workspace' : '只读') + '）：载入一张原立绘开始');
+      if (!S.img) msg('打开工程，开始记录问题');
     }).catch(function () {
       S.caps = { saveProject: false, saveBundle: false };
       msg('静态服务可用（无保存 API）：可用 ZIP 导出');
@@ -2438,6 +3178,23 @@
     setTool: setTool,
     setChannel: setChannel,
     setMode: setMode,
+    setAdvanced: setAdvanced,
+    setLayout: setLayout,
+    paneRect: function (key) {
+      var panes = paneLayout();
+      for (var i = 0; i < panes.length; i++) {
+        if (panes[i].key !== key) continue;
+        var src = paneSource(panes[i]);
+        if (!src) return null;
+        return paneRect(panes[i], src.w, src.h);
+      }
+      return null;
+    },
+    sharedView: sharedView,
+    fitPaneKey: fitPaneKey,
+    setBaseMode: function (mode) { S.baseMode = mode === 'stack' ? 'stack' : 'art'; $('#useStack').checked = S.baseMode === 'stack'; if (S.baseMode === 'stack') ensureLayerImages(); scheduleRender(); },
+    stackCanvas: function () { if (S.stackDirty) rebuildStack(); return S.stackCanvas; },
+    stopDrawing: stopDrawing,
     createIssue: createIssue,
     deleteIssue: deleteIssue,
     applyIssueSelection: applyIssueSelection,
@@ -2455,13 +3212,13 @@
       var p = partById(id);
       if (!p) return false;
       p.visible = !!v;
-      S.overlayDirty = true; S.outlineDirty = true; S.visibilityDirty = true;
+      S.overlayDirty = true; S.outlineDirty = true; S.visibilityDirty = true; S.stackDirty = true;
       renderParts(); scheduleRender();
       return true;
     },
     wandAt: function (ix, iy) {
       var r = cv.getBoundingClientRect();
-      applyWand({ clientX: r.left + S.tx + ix * S.zoom, clientY: r.top + S.ty + iy * S.zoom });
+      applyWand({ clientX: r.left + S.paneOrigin.x + S.tx + ix * S.zoom, clientY: r.top + S.paneOrigin.y + S.ty + iy * S.zoom });
     },
     setSelectionRect: function (x0, y0, x1, y1) {
       S.selection = { type: 'rect', x0: x0, y0: y0, x1: x1, y1: y1 };

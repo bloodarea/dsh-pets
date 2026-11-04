@@ -21,7 +21,7 @@
 ├── hidden/<id>.png      # 可选。被遮挡补全区二值掩码
 ├── cuts-hidden/<id>.png # 可选。按补全区从 base 切出的 RGBA（颜色为推测占位）
 ├── issues.json          # 可选。拆分问题清单（审查标注，见 §3.5）
-└── issues/<id>[-before|-after].png  # 可选。问题位置 / 改动前 / 改动后 二值掩码
+└── issues/<id>[-before|-after].png  # 可选。问题位置 / 改动前参考 / 期望范围 二值掩码
 ```
 
 规则：
@@ -139,12 +139,15 @@
 
 - `type`：`edge-missing` 边缘缺失 · `jagged` 毛边/锯齿 · `under-split` 拆少了 ·
   `over-split` 拆多了 · `wrong-part` 归属错误 · `completion` 补全质量 · `other`。
-- `severity`：1 低 / 2 中 / 3 高。`partId` 可空（不关联具体件）。
-- `beforePartId`（本工具扩展，可选）：`files.before` 是由**哪一件的可见区**生成的——
-  工具里「改动前」不画选区，直接点选一个拆分部件，`before` 掩码 = 该件的可见区像素。
-  返修端可以据此把 `before` 与 `masks/<beforePartId>.png` 互相校验；缺省时按 `partId` 理解。
+- `severity`：1 低 / 2 中 / 3 高。
+- `partId` **必填**：有问题的部件 id（必须存在于 `parts.json`）。工具里第 1 步选「哪个部件有问题」，
+  没有拆分部件时不允许添加问题。
+- `beforePartId`（本工具扩展，可选，默认等于 `partId`）：`files.before` 是由**哪一件的可见区**生成的——
+  「改动前」不画选区，直接选部件，`before` 掩码 = 该件的可见区像素。
+  返修端可以据此把 `before` 与 `masks/<beforePartId>.png` 互相校验。
 - `files.region` **必填**：问题实际发生的区域；`before` / `after` 可选：
-  `before` = 当前归属的区域（由 `beforePartId` 的可见区生成），`after` = 期望的区域（该归哪件、该补到哪）。
+  `before` = 该部件当前占用的区域（由 `beforePartId` 的可见区生成），
+  `after` = 期望该部件改后拥有的区域（可以只圈一部分，允许不完整）。
   三者都是与 `base.png` 同画布的二值掩码（白=属于该区域）。
 - **多选区**：`region` / `after` 可以由矩形、多边形、魔法棒**多次累加**而成，
   因此同一张掩码里可能有多个**不相邻的块**；`pixels.blocks` 给出每类的 4 连通块数

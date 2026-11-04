@@ -27,6 +27,9 @@ import pathlib
 import re
 import socket
 import socketserver
+import signal
+import subprocess
+import time
 import sys
 import tempfile
 import threading
@@ -830,24 +833,110 @@ def is_loopback_bind(bind):
     return bind in ("127.0.0.1", "localhost")
 
 
+# ---------------------------------------------------------------- 端口占用处理
+def port_owner_pid(port):
+    """返回监听该端口的 PID；查不到返回 None。"""
+    if os.name == "nt":
+        try:
+            out = subprocess.run(["netstat", "-ano", "-p", "tcp"],
+                                 capture_output=True, text=True, timeout=10).stdout
+        except Exception:  # noqa: BLE001
+            return None
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) >= 5 and parts[0].upper() == "TCP" and parts[3].upper() == "LISTENING":
+                if parts[1].rsplit(":", 1)[-1] == str(port):
+                    try:
+                        return int(parts[4])
+                    except ValueError:
+                        continue
+        return None
+    for cmd in (["lsof", "-ti", "tcp:%d" % port, "-sTCP:LISTEN"], ["fuser", "%d/tcp" % port]):
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=10).stdout
+        except Exception:  # noqa: BLE001
+            continue
+        for tok in out.split():
+            if tok.isdigit():
+                return int(tok)
+    return None
+
+
+def process_command_line(pid):
+    if os.name == "nt":
+        try:
+            out = subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 "(Get-CimInstance Win32_Process -Filter \"ProcessId=%d\").CommandLine" % pid],
+                capture_output=True, text=True, timeout=20).stdout
+            return out.strip()
+        except Exception:  # noqa: BLE001
+            return ""
+    try:
+        return subprocess.run(["ps", "-p", str(pid), "-o", "args="],
+                              capture_output=True, text=True, timeout=10).stdout.strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def kill_pid(pid):
+    if os.name == "nt":
+        try:
+            subprocess.run(["taskkill", "/PID", str(pid), "/F"],
+                           capture_output=True, timeout=20)
+        except Exception:  # noqa: BLE001
+            pass
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        pass
+
+
+def release_port(port, marker, wait=8.0):
+    """端口若被本工具的旧 serve.py 占着，就结束它并等端口释放。
+
+    返回 (usable, note)：usable=False 表示端口被别人占着，调用方应换端口或退出。
+    """
+    pid = port_owner_pid(port)
+    if pid is None:
+        return True, ""
+    if pid == os.getpid():
+        return True, ""
+    cmd = process_command_line(pid)
+    if marker not in cmd:
+        return False, ("端口 %d 被 PID %d 占用（不是本工具的 serve.py）：%s"
+                       % (port, pid, cmd[:160] or "读取不到命令行"))
+    kill_pid(pid)
+    deadline = time.time() + wait
+    while time.time() < deadline:
+        if port_owner_pid(port) is None:
+            return True, "已结束占用端口 %d 的旧实例（PID %d）" % (port, pid)
+        time.sleep(0.15)
+    return False, "旧实例（PID %d）在 %.0f 秒内没有退出，请手动结束后再启动" % (pid, wait)
+
+
+def port_is_free(port):
+    """端口没被监听才算空闲（Windows 的 SO_REUSEADDR 会让 bind 探测误判）。"""
+    return port_owner_pid(port) is None
+
+
 def free_port(preferred, tries=40):
     if preferred == 0:
         with socket.socket() as s:
             s.bind(("127.0.0.1", 0))
             return s.getsockname()[1]
     for p in range(preferred, preferred + tries):
-        with socket.socket() as s:
-            try:
-                s.bind(("127.0.0.1", p))
-                return p
-            except OSError:
-                continue
+        if port_is_free(p):
+            return p
     raise SystemExit("从 %d 起连续 %d 个端口都被占用，请用 --port 指定" % (preferred, tries))
 
 
 class ThreadingServer(socketserver.ThreadingTCPServer):
     daemon_threads = True
-    allow_reuse_address = True
+    # Windows 的 SO_REUSEADDR 允许“重复绑定”同一端口，两个实例会同时以为自己是服务，
+    # 于是出现“旧进程没杀掉也能起第二份”。这里在 Windows 上禁止复用，占用就直接失败。
+    allow_reuse_address = os.name != "nt"
     repo_root = ""
     write_enabled = True
 
@@ -857,6 +946,8 @@ def main():
     ap.add_argument("--port", type=int, default=8123, help="优先端口，0=随机（默认 8123）")
     ap.add_argument("--bind", default="127.0.0.1", help="监听地址（默认仅本机；非回环只读）")
     ap.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
+    ap.add_argument("--no-restart", action="store_true", help="不要结束占用端口的旧实例，改用其它端口")
+    ap.add_argument("--strict-port", action="store_true", help="端口被其它程序占用时直接退出，不换端口")
     args = ap.parse_args()
 
     root = repo_root()
@@ -864,7 +955,22 @@ def main():
         print("找不到编辑器页面：%s/tools/character-editor/index.html" % root, file=sys.stderr)
         return 1
 
-    port = free_port(args.port)
+    port = args.port
+    if port and not args.no_restart:
+        usable, note = release_port(port, "character-editor")
+        if note:
+            print(note)
+        if not usable:
+            if args.strict_port:
+                print("已停止：端口 %d 被其它程序占用（换端口用 --port 9000，或先结束它）" % port)
+                return 2
+            print("改用一个空闲端口继续启动")
+    if port == 0:
+        port = free_port(0)
+    elif not port_is_free(port):
+        newport = free_port(port)
+        print("端口 %d 仍被占用，改用 %d" % (port, newport))
+        port = newport
     bind = args.bind
     write_enabled = is_loopback_bind(bind)
     url = "http://%s:%d%s" % (bind, port, EDITOR_PATH)

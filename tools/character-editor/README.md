@@ -13,8 +13,15 @@
 | Linux / macOS | `./tools/character-editor/start.sh` |
 | Windows | 双击 `tools\character-editor\start.bat`，或命令行 `start.bat` |
 
-脚本会：自动选空闲端口（默认 8123，被占用就往后找）→ 在**仓库根目录**起静态服务 →
-打开浏览器。用 `--port 9000` 指定端口，`--no-browser` 只起服务。
+脚本会：检查端口（默认 8123）→ 在**仓库根目录**起静态服务 → 打开浏览器。
+用 `--port 9000` 指定端口，`--no-browser` 只起服务。
+
+**端口被占用时**：
+
+- 占着的是**本工具自己的旧实例**（`character-editor/serve.py`）→ 先结束它，再接管同一个端口，不用手动找进程；
+- 占着的是**别的程序** → 不杀它，打印占用者（PID + 命令行）并改用下一个空闲端口；
+  想让它直接报错就用 `--strict-port`；
+- `--no-restart`：不结束旧实例，直接换空闲端口。
 
 等价的手工方式（**只读**：能载入与另存 ZIP，保存文件置灰；就地保存需要 `start.sh` 起的 `serve.py`）：
 
